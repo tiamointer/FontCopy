@@ -17,11 +17,10 @@ struct FontPreviewCollectionView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = NSSize(width: 320, height: 180)
+        let layout = LeftAlignedFlowLayout()
         layout.minimumInteritemSpacing = 16
-        layout.minimumLineSpacing = 18
-        layout.sectionInset = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        layout.minimumLineSpacing = 14
+        layout.sectionInset = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
 
         let collectionView = NSCollectionView()
         collectionView.collectionViewLayout = layout
@@ -47,6 +46,7 @@ struct FontPreviewCollectionView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.collectionView?.collectionViewLayout?.invalidateLayout()
         context.coordinator.collectionView?.reloadData()
     }
 
@@ -109,15 +109,51 @@ struct FontPreviewCollectionView: NSViewRepresentable {
             layout collectionViewLayout: NSCollectionViewLayout,
             sizeForItemAt indexPath: IndexPath
         ) -> NSSize {
-            let width = max(280, min(420, collectionView.bounds.width / columns(for: collectionView.bounds.width) - 22))
-            return NSSize(width: width, height: 190)
+            let metrics = layoutMetrics(for: collectionView.bounds.width)
+            return NSSize(width: metrics.itemWidth, height: 178)
         }
 
-        private func columns(for width: CGFloat) -> CGFloat {
-            if width > 1250 { return 3 }
-            if width > 760 { return 2 }
-            return 1
+        private func layoutMetrics(for width: CGFloat) -> (columns: Int, itemWidth: CGFloat) {
+            let inset: CGFloat = 32
+            let spacing: CGFloat = 16
+            let minimumReadableWidth: CGFloat = 340
+            let availableWidth = max(260, width - inset)
+            let columns = max(
+                1,
+                min(5, Int((availableWidth + spacing) / (minimumReadableWidth + spacing)))
+            )
+            let itemWidth = floor((availableWidth - CGFloat(columns - 1) * spacing) / CGFloat(columns))
+            return (columns, itemWidth)
         }
+    }
+}
+
+private final class LeftAlignedFlowLayout: NSCollectionViewFlowLayout {
+    override func shouldInvalidateLayout(forBoundsChange newBounds: NSRect) -> Bool {
+        true
+    }
+
+    override func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
+        let attributes = super.layoutAttributesForElements(in: rect).map {
+            $0.copy() as! NSCollectionViewLayoutAttributes
+        }
+
+        var currentRowY: CGFloat?
+        var left = sectionInset.left
+
+        for attribute in attributes where attribute.representedElementCategory == .item {
+            if currentRowY == nil || abs(attribute.frame.minY - currentRowY!) > 1 {
+                currentRowY = attribute.frame.minY
+                left = sectionInset.left
+            }
+
+            var frame = attribute.frame
+            frame.origin.x = left
+            attribute.frame = frame
+            left = frame.maxX + minimumInteritemSpacing
+        }
+
+        return attributes
     }
 }
 
@@ -197,7 +233,8 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
-            previewLabel.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            previewLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            previewLabel.heightAnchor.constraint(equalToConstant: 78)
         ])
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(selectFont))
