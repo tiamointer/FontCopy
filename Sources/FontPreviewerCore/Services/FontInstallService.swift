@@ -24,9 +24,13 @@ public struct FontInstallService: Sendable {
         }
 
         do {
-            let copyCommands = try installableFonts.map { font -> String in
-                let destination = try destinationURL(for: font)
-                return "/bin/cp -p \(PathUtilities.shellQuoted(font.sourceURL.path)) \(PathUtilities.shellQuoted(destination.path))"
+            let stagedFiles = try stageFontsForPrivilegedInstall(installableFonts)
+            defer {
+                try? FileManager.default.removeItem(at: stagedFiles.stagingDirectory)
+            }
+
+            let copyCommands = stagedFiles.files.map { stagedFile in
+                "/bin/cp -p \(PathUtilities.shellQuoted(stagedFile.stagedURL.path)) \(PathUtilities.shellQuoted(stagedFile.destinationURL.path))"
             }
             let command = """
             /bin/mkdir -p /Library/Fonts
@@ -42,6 +46,33 @@ public struct FontInstallService: Sendable {
             let failed = Dictionary(uniqueKeysWithValues: installableFonts.map { ($0.fileID, error.localizedDescription) })
             return FontInstallResult(installedFileIDs: [], skippedFileIDs: skipped, failed: failed)
         }
+    }
+
+    private func stageFontsForPrivilegedInstall(_ fonts: [FontItem]) throws -> StagedInstallSet {
+        let fileManager = FileManager.default
+        let stagingDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("FontPreviewerMacInstall-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+
+        var stagedFiles: [StagedInstallFile] = []
+        do {
+            for font in fonts {
+                let destination = try destinationURL(for: font)
+                let stagedName = "\(font.fileID.uuidString)-\(font.sourceURL.lastPathComponent)"
+                let stagedURL = stagingDirectory.appendingPathComponent(stagedName)
+                try fileManager.copyItem(at: font.sourceURL, to: stagedURL)
+                stagedFiles.append(StagedInstallFile(
+                    fileID: font.fileID,
+                    stagedURL: stagedURL,
+                    destinationURL: destination
+                ))
+            }
+        } catch {
+            try? fileManager.removeItem(at: stagingDirectory)
+            throw error
+        }
+
+        return StagedInstallSet(stagingDirectory: stagingDirectory, files: stagedFiles)
     }
 
     private func uniqueInstallableFiles(from fonts: [FontItem]) -> [FontItem] {
@@ -94,6 +125,17 @@ public struct FontInstallService: Sendable {
             throw FontInstallError.appleScriptFailed(message ?? "系统字体安装失败")
         }
     }
+}
+
+private struct StagedInstallSet {
+    let stagingDirectory: URL
+    let files: [StagedInstallFile]
+}
+
+private struct StagedInstallFile {
+    let fileID: UUID
+    let stagedURL: URL
+    let destinationURL: URL
 }
 
 public enum FontInstallError: LocalizedError, Sendable {

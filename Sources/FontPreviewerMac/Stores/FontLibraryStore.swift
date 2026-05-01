@@ -296,6 +296,9 @@ final class FontLibraryStore: ObservableObject {
             if let failure = result.failed[fonts[index].fileID] {
                 fonts[index].installStatus = .error
                 fonts[index].installError = failure
+            } else if result.installedFileIDs.contains(fonts[index].fileID) {
+                fonts[index].installStatus = .installed
+                fonts[index].installError = nil
             } else if installedSnapshot.postScriptNames.contains(fonts[index].postScriptName) {
                 fonts[index].installStatus = .installed
                 fonts[index].installError = nil
