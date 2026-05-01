@@ -15,6 +15,8 @@ struct PreviewPaneView: View {
 
             if store.fonts.isEmpty {
                 emptyState
+            } else if store.isShowingSelectedFontDetail, let selectedFont = store.selectedFont {
+                FocusedFontDetailView(store: store, font: selectedFont)
             } else {
                 VStack(spacing: 0) {
                     if !store.comparedFonts.isEmpty {
@@ -29,7 +31,9 @@ struct PreviewPaneView: View {
                         onFavorite: store.toggleFavorite,
                         onCompare: store.toggleCompare,
                         onInstall: store.install,
-                        onCopy: store.copyFCPXStyle,
+                        onCopy: { font, selectedText in
+                            store.copyFCPXStyle(font, text: selectedText)
+                        },
                         onSelect: store.selectFont
                     )
                 }
@@ -118,10 +122,126 @@ struct PreviewPaneView: View {
                 onFavorite: store.toggleFavorite,
                 onCompare: store.toggleCompare,
                 onInstall: store.install,
-                onCopy: store.copyFCPXStyle,
+                onCopy: { font, selectedText in
+                    store.copyFCPXStyle(font, text: selectedText)
+                },
                 onSelect: store.selectFont
             )
             .frame(height: 220)
+        }
+    }
+}
+
+private struct FocusedFontDetailView: View {
+    @ObservedObject var store: FontLibraryStore
+    let font: FontItem
+
+    private var previewText: String {
+        store.previewText.isEmpty ? "输入一些内容以进行预览..." : store.previewText
+    }
+
+    private var focusedFontSize: Double {
+        min(max(store.fontSize * 1.8, 96), 220)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .firstTextBaseline) {
+                    Button {
+                        store.showAllFonts()
+                    } label: {
+                        Label("返回列表", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+
+                    Spacer()
+
+                    Text(font.installStatus.displayName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusTint)
+                }
+
+                SelectableFontPreviewText(
+                    text: previewText,
+                    postScriptName: font.postScriptName,
+                    fontSize: CGFloat(focusedFontSize),
+                    alignment: .center,
+                    onCopySelection: { selectedText in
+                        store.copyFCPXStyle(font, text: selectedText)
+                    }
+                )
+                    .frame(maxWidth: .infinity, minHeight: 260, alignment: .center)
+                    .padding(32)
+                    .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+
+                HStack(spacing: 10) {
+                    Button {
+                        store.copyFCPXStyle(font)
+                    } label: {
+                        Label("复制样式", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        store.toggleFavorite(font)
+                    } label: {
+                        Label(font.isFavorite ? "已收藏" : "收藏", systemImage: font.isFavorite ? "star.fill" : "star")
+                    }
+
+                    Button {
+                        store.toggleCompare(font)
+                    } label: {
+                        Label(font.isCompared ? "移除比较" : "加入比较", systemImage: "plus.square.on.square")
+                    }
+
+                    Button {
+                        store.install(font)
+                    } label: {
+                        Label(font.installStatus == .installing ? "安装中" : "安装", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(!font.installStatus.isInstallable || !font.isSupportedFontFile || store.isInstalling)
+                }
+
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                    metadataRow("PostScript", font.postScriptName)
+                    metadataRow("Family", font.familyName)
+                    metadataRow("Style", font.styleName ?? "未知")
+                    metadataRow("Category", font.category)
+                    metadataRow("Version", font.version ?? "未知")
+                    metadataRow("File", font.relativePath)
+                    metadataRow("Hash", String(font.fileHash.prefix(12)))
+                    if let installError = font.installError {
+                        metadataRow("Install Error", installError)
+                    }
+                }
+                .font(.callout)
+                .padding(.top, 4)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var statusTint: Color {
+        switch font.installStatus {
+        case .installed: return .green
+        case .missing: return .orange
+        case .unsupported: return .secondary
+        case .conflict: return .yellow
+        case .installing: return .blue
+        case .error: return .red
+        }
+    }
+
+    private func metadataRow(_ title: String, _ value: String) -> some View {
+        GridRow {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value.isEmpty ? "未知" : value)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
         }
     }
 }

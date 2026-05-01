@@ -134,6 +134,13 @@ final class FontLibraryStore: ObservableObject {
         return fonts.first { $0.id == selectedFontID }
     }
 
+    var isShowingSelectedFontDetail: Bool {
+        if case .selectedFont = libraryMode {
+            return true
+        }
+        return false
+    }
+
     func chooseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -227,6 +234,10 @@ final class FontLibraryStore: ObservableObject {
         libraryMode = .selectedFont(font.id)
     }
 
+    func showAllFonts() {
+        libraryMode = .all
+    }
+
     func setMode(_ mode: LibraryMode) {
         libraryMode = mode
         if case .selectedFont(let id) = mode {
@@ -298,8 +309,9 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
-    func copyFCPXStyle(_ font: FontItem) {
-        pasteboard.copyRichTextForFCPX(text: previewText, font: font, fontSize: fontSize)
+    func copyFCPXStyle(_ font: FontItem, text selectedText: String? = nil) {
+        let text = selectedText.flatMap { $0.isEmpty ? nil : $0 } ?? previewText
+        pasteboard.copyRichTextForFCPX(text: text, font: font, fontSize: fontSize)
     }
 
     func presentClipboardInspector() {

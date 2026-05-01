@@ -51,26 +51,6 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .overlay {
-            if store.isScanning {
-                VStack(spacing: 8) {
-                    ProgressView(value: store.scanProgressFraction)
-                        .frame(width: 180)
-                    Text(store.scanProgressText)
-                        .font(.caption.weight(.medium))
-                    if let currentPath = store.scanProgress?.currentPath {
-                        Text(currentPath)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(width: 220)
-                    }
-                }
-                .padding()
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            }
-        }
     }
 
     private var controls: some View {

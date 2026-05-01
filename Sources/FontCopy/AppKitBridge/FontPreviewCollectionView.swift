@@ -9,7 +9,7 @@ struct FontPreviewCollectionView: NSViewRepresentable {
     var onFavorite: (FontItem) -> Void
     var onCompare: (FontItem) -> Void
     var onInstall: (FontItem) -> Void
-    var onCopy: (FontItem) -> Void
+    var onCopy: (FontItem, String?) -> Void
     var onSelect: (FontItem) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -89,19 +89,14 @@ struct FontPreviewCollectionView: NSViewRepresentable {
                         self.parent.onCompare(font)
                     case .install:
                         self.parent.onInstall(font)
-                    case .copy:
-                        self.parent.onCopy(font)
+                    case .copy(let selectedText):
+                        self.parent.onCopy(font, selectedText)
                     case .select:
                         self.parent.onSelect(font)
                     }
                 }
             )
             return previewItem
-        }
-
-        func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
-            guard let indexPath = indexPaths.first, indexPath.item < parent.items.count else { return }
-            parent.onSelect(parent.items[indexPath.item])
         }
 
         func collectionView(
@@ -161,7 +156,7 @@ private enum FontPreviewAction {
     case favorite
     case compare
     case install
-    case copy
+    case copy(String?)
     case select
 }
 
@@ -171,11 +166,12 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
-    private let previewLabel = NSTextField(labelWithString: "")
+    private let previewTextView = FontCopySelectableTextView()
     private let favoriteButton = NSButton(title: "☆", target: nil, action: nil)
     private let compareButton = NSButton(title: "比较", target: nil, action: nil)
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
     private let installButton = NSButton(title: "安装", target: nil, action: nil)
+    private let doubleClickGesture = NSClickGestureRecognizer()
 
     private var font: FontItem?
     private var actionHandler: ((FontPreviewAction, FontItem) -> Void)?
@@ -187,6 +183,11 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         view.layer?.borderWidth = 1
         view.layer?.borderColor = NSColor.separatorColor.cgColor
         view.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
+        doubleClickGesture.numberOfClicksRequired = 2
+        doubleClickGesture.delaysPrimaryMouseButtonEvents = false
+        doubleClickGesture.target = self
+        doubleClickGesture.action = #selector(openDetail)
+        view.addGestureRecognizer(doubleClickGesture)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -194,11 +195,8 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         metadataLabel.textColor = .secondaryLabelColor
         metadataLabel.lineBreakMode = .byTruncatingTail
         statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        previewLabel.isEditable = false
-        previewLabel.isSelectable = false
-        previewLabel.maximumNumberOfLines = 3
-        previewLabel.lineBreakMode = .byWordWrapping
-        previewLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        previewTextView.maximumNumberOfLines = 2
+        previewTextView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         for button in [favoriteButton, compareButton, copyButton, installButton] {
             button.bezelStyle = .rounded
@@ -221,7 +219,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         buttons.orientation = .horizontal
         buttons.spacing = 6
 
-        let stack = NSStackView(views: [header, metadataLabel, previewLabel, buttons])
+        let stack = NSStackView(views: [header, metadataLabel, previewTextView, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -233,8 +231,8 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
-            previewLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            previewLabel.heightAnchor.constraint(equalToConstant: 78)
+            previewTextView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            previewTextView.heightAnchor.constraint(equalToConstant: 78)
         ])
     }
 
@@ -257,8 +255,15 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         metadataLabel.stringValue = "\(font.postScriptName) · \(font.relativePath)"
         statusLabel.stringValue = font.installStatus.displayName
         statusLabel.textColor = color(for: font.installStatus)
-        previewLabel.stringValue = previewText.isEmpty ? "输入一些内容以进行预览..." : previewText
-        previewLabel.font = NSFont(name: font.postScriptName, size: fontSize) ?? .systemFont(ofSize: fontSize)
+        previewTextView.configure(
+            text: previewText.isEmpty ? "输入一些内容以进行预览..." : previewText,
+            postScriptName: font.postScriptName,
+            fontSize: CGFloat(fontSize),
+            alignment: .left
+        )
+        previewTextView.copySelectedText = { [weak self] selectedText in
+            self?.copyText(selectedText)
+        }
 
         favoriteButton.title = font.isFavorite ? "★" : "☆"
         favoriteButton.toolTip = font.isFavorite ? "从收藏夹移除" : "添加到收藏夹"
@@ -283,7 +288,28 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
     }
 
     @objc private func copyStyle() {
-        perform(.copy)
+        perform(.copy(nil))
+    }
+
+    @objc private func openDetail() {
+        let location = doubleClickGesture.location(in: view)
+        let hitView = view.hitTest(location)
+        guard shouldOpenDetail(from: hitView) else { return }
+        perform(.select)
+    }
+
+    private func shouldOpenDetail(from hitView: NSView?) -> Bool {
+        guard let hitView else { return true }
+        if hitView == previewTextView || hitView.isDescendant(of: previewTextView) {
+            return false
+        }
+
+        let actionViews = [favoriteButton, compareButton, copyButton, installButton]
+        return !actionViews.contains { hitView == $0 || hitView.isDescendant(of: $0) }
+    }
+
+    private func copyText(_ selectedText: String) {
+        perform(.copy(selectedText))
     }
 
     private func perform(_ action: FontPreviewAction) {
