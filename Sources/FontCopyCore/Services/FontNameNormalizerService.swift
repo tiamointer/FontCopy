@@ -82,9 +82,6 @@ public struct FontNameNormalizerService: Sendable {
         guard ["ttf", "otf", "ttc", "otc"].contains(ext) else {
             return skipped(url, "不是支持的字体格式")
         }
-        guard ext == "ttf" || ext == "otf" else {
-            return skipped(url, "字体集合 .\(ext) 暂不支持内部改名")
-        }
 
         let targetName = url.deletingPathExtension().lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetName.isEmpty else {
@@ -96,12 +93,28 @@ public struct FontNameNormalizerService: Sendable {
         do {
             let originalData = try Data(contentsOf: url, options: [.mappedIfSafe])
             let hash = Self.stableShortHash(for: "\(url.standardizedFileURL.path)|\(targetName)")
-            let postScriptName = Self.postScriptName(for: targetName, hash: hash)
-            let rewrittenData = try SFNTNameTableRewriter.rewrite(
-                data: originalData,
-                visibleName: targetName,
-                postScriptName: postScriptName
-            )
+            let postScriptPrefix = Self.postScriptName(for: targetName, hash: hash)
+
+            let rewrittenData: Data
+            let recordedPostScriptName: String
+
+            if ext == "ttc" || ext == "otc" {
+                let result = try TTCNameTableRewriter.rewrite(
+                    data: originalData,
+                    visibleName: targetName,
+                    postScriptNamePrefix: postScriptPrefix
+                )
+                rewrittenData = result.data
+                recordedPostScriptName = result.representativePostScriptName
+            } else {
+                rewrittenData = try SFNTNameTableRewriter.rewrite(
+                    data: originalData,
+                    visibleName: targetName,
+                    postScriptName: postScriptPrefix
+                )
+                recordedPostScriptName = postScriptPrefix
+            }
+
             try validateFontData(rewrittenData, originalURL: url)
             let backupURL = try createBackup(for: url)
             try rewrittenData.write(to: url, options: .atomic)
@@ -109,7 +122,7 @@ public struct FontNameNormalizerService: Sendable {
                 fileURL: url,
                 status: .success,
                 targetName: targetName,
-                postScriptName: postScriptName,
+                postScriptName: recordedPostScriptName,
                 backupURL: backupURL,
                 priorPostScriptName: priorMetadata?.postScriptName,
                 priorFamilyName: priorMetadata?.familyName,
@@ -120,7 +133,10 @@ public struct FontNameNormalizerService: Sendable {
         }
     }
 
-    public func normalizeFolder(at url: URL) -> FontNameNormalizationReport {
+    public func normalizeFolder(
+        at url: URL,
+        progress: ((FontNormalizeProgress) -> Void)? = nil
+    ) -> FontNameNormalizationReport {
         let fileURLs: [URL]
         do {
             fileURLs = try collectFontFiles(in: url)
@@ -132,7 +148,53 @@ public struct FontNameNormalizerService: Sendable {
             return FontNameNormalizationReport(results: [skipped(url, "文件夹中没有可处理的字体文件")])
         }
 
-        return FontNameNormalizationReport(results: fileURLs.map(normalizeFile))
+        return normalizeFiles(fileURLs, progress: progress)
+    }
+
+    public func normalizeFiles(
+        _ urls: [URL],
+        progress: ((FontNormalizeProgress) -> Void)? = nil
+    ) -> FontNameNormalizationReport {
+        var results: [FontNameNormalizationResult] = []
+        results.reserveCapacity(urls.count)
+        var success = 0
+        var skipped = 0
+        var failedCount = 0
+        let total = urls.count
+        progress?(FontNormalizeProgress(
+            processed: 0,
+            total: total,
+            success: 0,
+            skipped: 0,
+            failed: 0,
+            currentName: urls.first?.lastPathComponent
+        ))
+        for (index, fileURL) in urls.enumerated() {
+            progress?(FontNormalizeProgress(
+                processed: index,
+                total: total,
+                success: success,
+                skipped: skipped,
+                failed: failedCount,
+                currentName: fileURL.lastPathComponent
+            ))
+            let result = normalizeFile(at: fileURL)
+            switch result.status {
+            case .success: success += 1
+            case .skipped: skipped += 1
+            case .failed: failedCount += 1
+            }
+            results.append(result)
+            progress?(FontNormalizeProgress(
+                processed: index + 1,
+                total: total,
+                success: success,
+                skipped: skipped,
+                failed: failedCount,
+                currentName: index + 1 < total ? urls[index + 1].lastPathComponent : nil
+            ))
+        }
+        return FontNameNormalizationReport(results: results)
     }
 
     private func collectFontFiles(in rootURL: URL) throws -> [URL] {
@@ -286,6 +348,167 @@ private enum SFNTNameTableRewriter {
         let rewrittenNameTable = try NameTable(data: nameTable.data)
             .rewritten(visibleName: visibleName, postScriptName: postScriptName)
         return try font.replacingTable(named: "name", with: rewrittenNameTable)
+    }
+}
+
+struct TTCNormalizationOutput {
+    let data: Data
+    let representativePostScriptName: String
+}
+
+private enum TTCNameTableRewriter {
+    static func rewrite(
+        data: Data,
+        visibleName: String,
+        postScriptNamePrefix: String
+    ) throws -> TTCNormalizationOutput {
+        let header = try TTCHeader(data: data)
+        guard !header.subfontOffsets.isEmpty else {
+            throw FontNameNormalizationError.unsupportedSFNT
+        }
+
+        struct Plan {
+            let nameDirectoryEntryOffset: Int
+            let newNameTable: Data
+            let newPostScriptName: String
+            let firstSubfont: Bool
+        }
+
+        var plans: [Plan] = []
+        var styleSlugCounts: [String: Int] = [:]
+
+        for (index, dirOffset) in header.subfontOffsets.enumerated() {
+            let directoryStart = Int(dirOffset)
+            guard directoryStart + 12 <= data.count else {
+                throw FontNameNormalizationError.unsupportedSFNT
+            }
+            let sfntVersion = try data.readUInt32(at: directoryStart)
+            guard sfntVersion != FourCharCode.ttcf else {
+                throw FontNameNormalizationError.unsupportedSFNT
+            }
+            let numTables = Int(try data.readUInt16(at: directoryStart + 4))
+            guard directoryStart + 12 + numTables * 16 <= data.count else {
+                throw FontNameNormalizationError.unsupportedSFNT
+            }
+
+            var nameEntryOffset: Int?
+            var nameTableData: Data?
+            for tableIndex in 0..<numTables {
+                let entryOffset = directoryStart + 12 + tableIndex * 16
+                let tag = try data.readTag(at: entryOffset)
+                if tag == "name" {
+                    let tableOffset = Int(try data.readUInt32(at: entryOffset + 8))
+                    let tableLength = Int(try data.readUInt32(at: entryOffset + 12))
+                    guard tableOffset >= 0, tableLength >= 0, tableOffset + tableLength <= data.count else {
+                        throw FontNameNormalizationError.invalidTable("name")
+                    }
+                    nameEntryOffset = entryOffset
+                    nameTableData = data.subdata(in: tableOffset..<tableOffset + tableLength)
+                    break
+                }
+            }
+
+            guard let entryOffset = nameEntryOffset, let nameData = nameTableData else {
+                throw FontNameNormalizationError.missingRequiredTable("name")
+            }
+
+            let parsedNameTable = try NameTable(data: nameData)
+            let styleName = parsedNameTable.preferredStyleName() ?? "Regular"
+            let baseSlug = sanitizeStyleSlug(styleName) ?? "Style\(index + 1)"
+            var slug = baseSlug
+            let priorCount = styleSlugCounts[baseSlug, default: 0]
+            if priorCount > 0 {
+                slug = "\(baseSlug)\(priorCount + 1)"
+            }
+            styleSlugCounts[baseSlug] = priorCount + 1
+            let newPostScriptName = "\(postScriptNamePrefix)-\(slug)"
+
+            let newNameTable = try parsedNameTable.rewritten(
+                visibleName: visibleName,
+                postScriptName: newPostScriptName
+            )
+            plans.append(Plan(
+                nameDirectoryEntryOffset: entryOffset,
+                newNameTable: newNameTable,
+                newPostScriptName: newPostScriptName,
+                firstSubfont: index == 0
+            ))
+        }
+
+        var output = data
+        for plan in plans {
+            while output.count % 4 != 0 {
+                output.append(0)
+            }
+            let newOffset = UInt32(output.count)
+            let newLength = UInt32(plan.newNameTable.count)
+            output.append(plan.newNameTable)
+            let checksum = plan.newNameTable.openTypeChecksum
+            output.writeUInt32(checksum, at: plan.nameDirectoryEntryOffset + 4)
+            output.writeUInt32(newOffset, at: plan.nameDirectoryEntryOffset + 8)
+            output.writeUInt32(newLength, at: plan.nameDirectoryEntryOffset + 12)
+        }
+
+        let representative = plans.first?.newPostScriptName ?? postScriptNamePrefix
+        return TTCNormalizationOutput(data: output, representativePostScriptName: representative)
+    }
+
+    private static func sanitizeStyleSlug(_ styleName: String) -> String? {
+        let trimmed = styleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let latin = trimmed
+            .applyingTransform(.toLatin, reverse: false)?
+            .applyingTransform(.stripCombiningMarks, reverse: false) ?? trimmed
+        var collapsedDash = false
+        var slug = ""
+        for scalar in latin.unicodeScalars {
+            let value = Int(scalar.value)
+            let isAllowed = (65...90).contains(value)
+                || (97...122).contains(value)
+                || (48...57).contains(value)
+            if isAllowed {
+                slug.append(Character(scalar))
+                collapsedDash = false
+            } else if !collapsedDash {
+                slug.append("-")
+                collapsedDash = true
+            }
+        }
+        let trimmedSlug = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return trimmedSlug.isEmpty ? nil : String(trimmedSlug.prefix(20))
+    }
+}
+
+private struct TTCHeader {
+    let majorVersion: UInt16
+    let minorVersion: UInt16
+    let subfontOffsets: [UInt32]
+
+    init(data: Data) throws {
+        guard data.count >= 12 else { throw FontNameNormalizationError.unsupportedSFNT }
+        let tag = try data.readUInt32(at: 0)
+        guard tag == FourCharCode.ttcf else {
+            throw FontNameNormalizationError.unsupportedSFNT
+        }
+        majorVersion = try data.readUInt16(at: 4)
+        minorVersion = try data.readUInt16(at: 6)
+        guard majorVersion == 1 || majorVersion == 2 else {
+            throw FontNameNormalizationError.unsupportedSFNT
+        }
+        let numFonts = Int(try data.readUInt32(at: 8))
+        guard numFonts > 0, data.count >= 12 + numFonts * 4 else {
+            throw FontNameNormalizationError.unsupportedSFNT
+        }
+        var offsets: [UInt32] = []
+        offsets.reserveCapacity(numFonts)
+        for index in 0..<numFonts {
+            let offset = try data.readUInt32(at: 12 + index * 4)
+            guard Int(offset) >= 12, Int(offset) < data.count else {
+                throw FontNameNormalizationError.unsupportedSFNT
+            }
+            offsets.append(offset)
+        }
+        subfontOffsets = offsets
     }
 }
 
@@ -535,7 +758,7 @@ private struct NameTable {
         return output
     }
 
-    private func preferredStyleName() -> String? {
+    func preferredStyleName() -> String? {
         for nameID in [17, 2] as [UInt16] {
             for record in records where record.nameID == nameID {
                 if let decoded = Self.decode(record.rawString, platformID: record.platformID, encodingID: record.encodingID),
@@ -589,17 +812,30 @@ private struct NameReplacements {
 
     func string(for nameID: UInt16) -> String? {
         switch nameID {
-        case 1, 4, 16, 18, 21:
+        case 1, 16, 18, 21:
             return visibleName
+        case 4:
+            return fullName
         case 2, 17, 22:
             return styleName
         case 3:
-            return "\(visibleName); \(postScriptName)"
+            return "\(fullName); \(postScriptName)"
         case 6:
             return postScriptName
         default:
             return nil
         }
+    }
+
+    private var fullName: String {
+        let normalizedStyle = styleName.lowercased()
+        if normalizedStyle == "regular" || normalizedStyle.isEmpty {
+            return visibleName
+        }
+        if visibleName.lowercased().contains(normalizedStyle) {
+            return visibleName
+        }
+        return "\(visibleName) \(styleName)"
     }
 }
 

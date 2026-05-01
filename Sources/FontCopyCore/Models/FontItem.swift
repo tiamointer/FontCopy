@@ -75,7 +75,7 @@ public struct FontItem: Identifiable, Hashable, Codable, Sendable {
 
     public static let supportedExtensions: Set<String> = ["ttf", "otf", "ttc", "otc"]
     public static let fontLikeExtensions: Set<String> = ["ttf", "otf", "ttc", "otc", "woff", "woff2"]
-    public static let nameNormalizableExtensions: Set<String> = ["ttf", "otf"]
+    public static let nameNormalizableExtensions: Set<String> = ["ttf", "otf", "ttc", "otc"]
 }
 
 private extension String {

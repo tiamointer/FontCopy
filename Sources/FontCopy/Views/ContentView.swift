@@ -46,10 +46,10 @@ struct ContentView: View {
                 Button {
                     store.confirmAndInstallAllMissing()
                 } label: {
-                    Label("安装全部未安装", systemImage: "square.and.arrow.down")
+                    Label("安装当前未安装", systemImage: "square.and.arrow.down")
                 }
                 .disabled(store.installableFonts.isEmpty || store.isInstalling || store.isNormalizingFontNames)
-                .help("批量安装到 /Library/Fonts，会先显示确认")
+                .help("批量安装当前可见范围内的未安装字体到 /Library/Fonts，会先显示确认")
 
                 Button {
                     store.presentClipboardInspector()

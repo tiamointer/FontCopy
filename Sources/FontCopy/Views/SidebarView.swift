@@ -1,8 +1,11 @@
 import FontCopyCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @ObservedObject var store: FontLibraryStore
+    @State private var dropTargetCategory: String?
+    @State private var dropTargetAllFonts = false
 
     var body: some View {
         List(selection: Binding(
@@ -18,6 +21,10 @@ struct SidebarView: View {
                     Label(category, systemImage: "folder")
                         .badge(count)
                         .tag(FontLibraryStore.LibraryMode.category(category))
+                        .listRowBackground(dropTargetCategory == category ? Color.accentColor.opacity(0.18) : Color.clear)
+                        .onDrop(of: [.fileURL], isTargeted: dropBinding(for: category)) { providers in
+                            handleDrop(providers: providers, intoCategory: category)
+                        }
                 }
             }
 
@@ -45,6 +52,10 @@ struct SidebarView: View {
                 Label("所有字体", systemImage: "textformat")
                     .badge(store.fonts.count)
                     .tag(FontLibraryStore.LibraryMode.all)
+                    .listRowBackground(dropTargetAllFonts ? Color.accentColor.opacity(0.18) : Color.clear)
+                    .onDrop(of: [.fileURL], isTargeted: $dropTargetAllFonts) { providers in
+                        handleDrop(providers: providers, intoCategory: nil)
+                    }
 
                 Label("收藏夹", systemImage: "star")
                     .badge(store.fonts.filter(\.isFavorite).count)
@@ -121,6 +132,34 @@ struct SidebarView: View {
         case .installing: return "clock"
         case .error: return "xmark.octagon"
         }
+    }
+
+    private func dropBinding(for category: String) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetCategory == category },
+            set: { dropTargetCategory = $0 ? category : nil }
+        )
+    }
+
+    private func handleDrop(providers: [NSItemProvider], intoCategory category: String?) -> Bool {
+        let group = DispatchGroup()
+        var collected: [URL] = []
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    collected.append(url)
+                } else if let url = item as? URL {
+                    collected.append(url)
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            guard !collected.isEmpty else { return }
+            store.importDroppedFiles(collected, intoCategory: category)
+        }
+        return true
     }
 
     private func statusColor(_ status: FontInstallStatus) -> Color {

@@ -13,6 +13,22 @@ struct PreviewPaneView: View {
 
             Divider()
 
+            if let normalize = store.normalizeProgress {
+                progressStrip(
+                    fraction: normalize.fractionCompleted,
+                    primary: normalize.displayText,
+                    secondary: normalize.currentName
+                )
+                Divider()
+            } else if let install = store.installProgress {
+                progressStrip(
+                    fraction: install.fractionCompleted,
+                    primary: install.displayText,
+                    secondary: install.currentName
+                )
+                Divider()
+            }
+
             if store.fonts.isEmpty {
                 emptyState
             } else if store.isShowingSelectedFontDetail, let selectedFont = store.selectedFont {
@@ -64,20 +80,58 @@ struct PreviewPaneView: View {
             }
             .disabled(store.comparedFonts.isEmpty)
 
-            Button("安装全部未安装") {
+            Button("规范化当前") {
+                store.normalizeVisibleFonts()
+            }
+            .disabled(store.normalizableVisibleFontFiles.isEmpty || store.isNormalizingFontNames || store.isInstalling || store.isScanning)
+            .help("把当前可见范围内文件名与内部名不一致的字体批量规范化")
+
+            Button("安装当前未安装") {
                 store.confirmAndInstallAllMissing()
             }
             .disabled(store.installableFonts.isEmpty || store.isInstalling || store.isNormalizingFontNames)
-            .help("批量安装到 /Library/Fonts，会先显示确认")
+            .help("批量安装当前可见范围内的未安装字体到 /Library/Fonts，会先显示确认")
         }
     }
 
+    private func progressStrip(fraction: Double, primary: String, secondary: String?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                Text("\(Int(fraction * 100))%")
+                    .monospacedDigit()
+                    .frame(width: 44, alignment: .trailing)
+                    .foregroundStyle(.secondary)
+            }
+            Text(primary)
+                .font(.callout)
+            if let secondary, !secondary.isEmpty {
+                Text(secondary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thickMaterial)
+    }
+
     private var summaryText: String {
+        if store.normalizeProgress != nil || store.installProgress != nil {
+            return staticCountsText
+        }
         if let statusMessage = store.statusMessage {
             return statusMessage
         }
+        return staticCountsText
+    }
 
-        return "\(store.visibleFonts.count) 个字体 · 未安装 \(store.missingCount) · 冲突 \(store.conflictCount) · 不支持 \(store.unsupportedCount)"
+    private var staticCountsText: String {
+        "\(store.visibleFonts.count) 个字体 · 未安装 \(store.visibleMissingCount) · 冲突 \(store.visibleConflictCount) · 不支持 \(store.visibleUnsupportedCount)"
     }
 
     private var emptyState: some View {

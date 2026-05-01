@@ -15,13 +15,22 @@ final class FontLibraryStore: ObservableObject {
 
     @Published var fonts: [FontItem] = []
     @Published var skippedFiles: [SkippedFontFile] = []
-    @Published var libraryMode: LibraryMode = .all
+    @Published var libraryMode: LibraryMode = .all {
+        didSet {
+            if libraryMode != oldValue {
+                statusMessage = nil
+            }
+        }
+    }
     @Published var selectedFontID: UUID?
     @Published var searchText = ""
     @Published var isScanning = false
     @Published var isInstalling = false
     @Published var isNormalizingFontNames = false
+    @Published var isImportingDrop = false
     @Published var scanProgress: FontScanProgress?
+    @Published var normalizeProgress: FontNormalizeProgress?
+    @Published var installProgress: FontInstallProgress?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
     @Published var clipboardAnalysis: ClipboardAnalysis?
@@ -40,6 +49,7 @@ final class FontLibraryStore: ObservableObject {
     private let installer = FontInstallService()
     private let nameNormalizer = FontNameNormalizerService()
     private let pasteboard = PasteboardService()
+    private let importer = FontImportService()
     private var favoritePostScriptNames: Set<String>
     private var comparedPostScriptNames: Set<String>
     private var lastImportedFolder: URL?
@@ -78,7 +88,23 @@ final class FontLibraryStore: ObservableObject {
     }
 
     var installableFonts: [FontItem] {
-        fonts.filter { $0.installStatus.isInstallable && $0.isSupportedFontFile }
+        visibleFonts.filter { $0.installStatus.isInstallable && $0.isSupportedFontFile }
+    }
+
+    var visibleMissingCount: Int {
+        visibleFonts.filter { $0.installStatus == .missing }.count
+    }
+
+    var visibleConflictCount: Int {
+        visibleFonts.filter { $0.installStatus == .conflict }.count
+    }
+
+    var visibleUnsupportedCount: Int {
+        visibleFonts.filter { $0.installStatus == .unsupported }.count
+    }
+
+    var visibleInstalledCount: Int {
+        visibleFonts.filter { $0.installStatus == .installed }.count
     }
 
     var canRescan: Bool {
@@ -354,6 +380,201 @@ final class FontLibraryStore: ObservableObject {
         }.value
     }
 
+    func importDroppedFiles(_ urls: [URL], intoCategory category: String?) {
+        guard !urls.isEmpty else { return }
+        guard let importedRoot = lastImportedFolder else {
+            errorMessage = "请先点击工具栏「导入文件夹」选择字体库根目录。"
+            return
+        }
+        guard !isImportingDrop, !isScanning, !isInstalling, !isNormalizingFontNames else {
+            statusMessage = "正在处理上一个操作，请稍后再试。"
+            return
+        }
+        let supportedExtensions = FontItem.fontLikeExtensions
+        let filteredURLs = urls.filter {
+            supportedExtensions.contains($0.pathExtension.lowercased())
+        }
+        guard !filteredURLs.isEmpty else {
+            statusMessage = "拖入的文件中没有支持的字体格式。"
+            return
+        }
+
+        Task {
+            let resolvedCategory: String
+            if let category {
+                resolvedCategory = category
+            } else if let chosen = presentCategoryPicker(fileCount: filteredURLs.count) {
+                resolvedCategory = chosen
+            } else {
+                statusMessage = nil
+                return
+            }
+
+            await runDropImport(urls: filteredURLs, category: resolvedCategory, importedRoot: importedRoot)
+        }
+    }
+
+    private func runDropImport(urls: [URL], category: String, importedRoot: URL) async {
+        isImportingDrop = true
+        defer { isImportingDrop = false }
+        errorMessage = nil
+        statusMessage = "正在分析 \(urls.count) 个字体文件..."
+
+        let importer = importer
+        let snapshotFonts = fonts
+        let evaluations = await Task.detached(priority: .userInitiated) {
+            evaluateDroppedFiles(
+                urls: urls,
+                category: category,
+                importedRoot: importedRoot,
+                libraryFonts: snapshotFonts,
+                importer: importer
+            )
+        }.value
+
+        let rejections = evaluations.compactMap { (url, result) -> (URL, FontImportRejection)? in
+            if case .failure(let rejection) = result { return (url, rejection) }
+            return nil
+        }
+        let successes = evaluations.compactMap { (_, result) -> FontImportEvaluation? in
+            if case .success(let evaluation) = result { return evaluation }
+            return nil
+        }
+
+        if successes.isEmpty {
+            statusMessage = "没有可导入的字体。"
+            if let firstRejection = rejections.first {
+                errorMessage = firstRejection.1.localizedDescription
+            }
+            return
+        }
+
+        let conflicts = successes.filter(\.hasConflict)
+        let conflictMode: FontImportPlan.ConflictMode
+        if conflicts.isEmpty {
+            conflictMode = .skip
+        } else {
+            switch presentDropConflictResolution(
+                evaluations: successes,
+                category: category,
+                rejectionCount: rejections.count
+            ) {
+            case .cancel:
+                statusMessage = "已取消导入。"
+                return
+            case .skipConflicts:
+                conflictMode = .skip
+            case .overwriteAll:
+                conflictMode = .overwrite
+            }
+        }
+
+        let plan = FontImportPlan(evaluations: successes, conflictMode: conflictMode)
+        let executable = plan.executableEvaluations
+        if executable.isEmpty {
+            statusMessage = "没有可导入的字体（全部冲突已跳过）。"
+            return
+        }
+
+        statusMessage = "正在导入 \(executable.count) 个字体到“\(category)”..."
+        let copyOps = plan.copyOperations
+        let removalURLs = plan.filesToRemove
+        let executionResult = await Task.detached(priority: .userInitiated) {
+            performDropImport(removalURLs: removalURLs, copyOperations: copyOps)
+        }.value
+
+        if let failure = executionResult.failure {
+            errorMessage = failure
+            statusMessage = "导入失败：\(failure)"
+            return
+        }
+
+        await scanFolder(importedRoot, reason: "正在刷新拖入的字体")
+        var summary = "已导入 \(executable.count) 个字体到“\(category)”"
+        if !removalURLs.isEmpty {
+            summary += "，并移除 \(removalURLs.count) 个旧文件"
+        }
+        if !rejections.isEmpty {
+            summary += "（忽略 \(rejections.count) 个无法读取的文件）"
+        }
+        statusMessage = summary
+    }
+
+    private func presentCategoryPicker(fileCount: Int) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "选择目标分类"
+        alert.informativeText = "将 \(fileCount) 个字体文件添加到："
+
+        let availableCategories = categories.map(\.0).sorted()
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        for category in availableCategories {
+            popup.addItem(withTitle: category)
+        }
+        popup.addItem(withTitle: "未分类（根目录）")
+        if availableCategories.isEmpty {
+            popup.selectItem(withTitle: "未分类（根目录）")
+        }
+        alert.accessoryView = popup
+        let confirm = alert.addButton(withTitle: "添加")
+        confirm.keyEquivalent = "\r"
+        let cancel = alert.addButton(withTitle: "取消")
+        cancel.keyEquivalent = "\u{1b}"
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let title = popup.titleOfSelectedItem ?? "未分类（根目录）"
+            return title == "未分类（根目录）" ? "未分类" : title
+        default:
+            return nil
+        }
+    }
+
+    private func presentDropConflictResolution(
+        evaluations: [FontImportEvaluation],
+        category: String,
+        rejectionCount: Int
+    ) -> DropDecision {
+        let conflicting = evaluations.filter(\.hasConflict)
+        let cleanCount = evaluations.count - conflicting.count
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "检测到 \(conflicting.count) 个文件存在冲突"
+        let preview = conflicting.prefix(5).map { evaluation -> String in
+            let detail = evaluation.conflicts.map(describe).joined(separator: "；")
+            return "• \(evaluation.sourceURL.lastPathComponent) → \(evaluation.category)\n    \(detail)"
+        }.joined(separator: "\n")
+        let extra = conflicting.count > 5 ? "\n…还有 \(conflicting.count - 5) 个" : ""
+        var trailing = "\n\n\(cleanCount) 个无冲突文件可直接添加。"
+        if rejectionCount > 0 {
+            trailing += "\n另有 \(rejectionCount) 个文件无法读取，已自动跳过。"
+        }
+        alert.informativeText = preview + extra + trailing
+
+        let overwrite = alert.addButton(withTitle: "全部覆盖")
+        overwrite.keyEquivalent = "\r"
+        alert.addButton(withTitle: "跳过冲突，添加其他")
+        let cancel = alert.addButton(withTitle: "取消整个操作")
+        cancel.keyEquivalent = "\u{1b}"
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .overwriteAll
+        case .alertSecondButtonReturn: return .skipConflicts
+        default: return .cancel
+        }
+    }
+
+    private func describe(_ conflict: FontImportConflict) -> String {
+        switch conflict {
+        case .destinationFilenameCollision(let url):
+            return "目标目录已有同名文件：\(url.lastPathComponent)"
+        case .sameContentInLibrary(let font):
+            return "内容相同的字体已存在：\(font.relativePath)"
+        case .samePostScriptInLibrary(let font):
+            return "同 PostScript 名字体已存在：\(font.relativePath)"
+        }
+    }
+
     func normalizeSingleFontFile() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -390,6 +611,37 @@ final class FontLibraryStore: ObservableObject {
 
         Task {
             await normalizeFontNames(scopeURL: url, mode: .folder(url))
+        }
+    }
+
+    var normalizableVisibleFontFiles: [URL] {
+        var seenPaths = Set<String>()
+        var urls: [URL] = []
+        for font in visibleFonts where font.canNormalizeInternalName {
+            let path = font.sourceURL.standardizedFileURL.path
+            if seenPaths.insert(path).inserted {
+                urls.append(font.sourceURL)
+            }
+        }
+        return urls
+    }
+
+    func normalizeVisibleFonts() {
+        let urls = normalizableVisibleFontFiles
+        guard !urls.isEmpty else {
+            statusMessage = "当前可见范围内没有需要规范化的字体（文件名和内部名称已经一致）。"
+            return
+        }
+        guard !isScanning, !isInstalling, !isNormalizingFontNames else { return }
+        guard let importedRoot = lastImportedFolder else {
+            errorMessage = "请先导入字体文件夹。"
+            return
+        }
+        let scope = currentScopeDescription()
+        guard confirmFontNameNormalization(targetDescription: "\(scope)（\(urls.count) 个字体文件）") else { return }
+
+        Task {
+            await normalizeFontNames(scopeURL: importedRoot, mode: .files(urls))
         }
     }
 
@@ -442,9 +694,14 @@ final class FontLibraryStore: ObservableObject {
 
         let installer = installer
         let urlsToRemove = removingURLs
+        installProgress = FontInstallProgress(phase: .staging, processed: 0, total: targetFonts.count, currentName: nil)
+        let installProgressBridge = InstallProgressBridge { [weak self] progress in
+            self?.installProgress = progress
+        }
         let result = await Task.detached(priority: .userInitiated) {
-            installer.installFonts(targetFonts, removingURLs: urlsToRemove)
+            installer.installFonts(targetFonts, removingURLs: urlsToRemove, progress: installProgressBridge.report)
         }.value
+        installProgress = nil
 
         let installedSnapshot = await Task.detached(priority: .userInitiated) {
             InstalledFontService().snapshot()
@@ -484,6 +741,7 @@ final class FontLibraryStore: ObservableObject {
     private enum FontNameNormalizationMode: Sendable {
         case singleFile(URL)
         case folder(URL)
+        case files([URL])
     }
 
     private func normalizeFontNames(scopeURL: URL, mode: FontNameNormalizationMode) async {
@@ -492,15 +750,22 @@ final class FontLibraryStore: ObservableObject {
         statusMessage = "正在规范化字体名称..."
 
         let normalizer = nameNormalizer
+        let normalizeBridge = NormalizeProgressBridge { [weak self] progress in
+            self?.normalizeProgress = progress
+        }
+        normalizeProgress = nil
         let report = await Task.detached(priority: .userInitiated) {
             switch mode {
             case .singleFile(let url):
                 return FontNameNormalizationReport(results: [normalizer.normalizeFile(at: url)])
             case .folder(let url):
-                return normalizer.normalizeFolder(at: url)
+                return normalizer.normalizeFolder(at: url, progress: normalizeBridge.report)
+            case .files(let urls):
+                return normalizer.normalizeFiles(urls, progress: normalizeBridge.report)
             }
         }.value
 
+        normalizeProgress = nil
         isNormalizingFontNames = false
         statusMessage = report.summary
         if report.failedCount > 0 || report.skippedCount > 0 {
@@ -536,10 +801,13 @@ final class FontLibraryStore: ObservableObject {
     ) -> InstallDecision {
         let alert = NSAlert()
         alert.alertStyle = .warning
+        let scopeDescription = currentScopeDescription()
 
         if priorMatches.isEmpty {
-            alert.messageText = "确认安装全部未安装字体？"
+            alert.messageText = "确认安装当前未安装字体？"
             alert.informativeText = """
+            范围：\(scopeDescription)
+
             这会把 \(fileCount) 个字体文件安装到 /Library/Fonts，并需要管理员授权。
 
             如果你还需要先“规范化字体名称”，请取消并先使用侧边栏“工具”里的规范化功能。
@@ -565,6 +833,8 @@ final class FontLibraryStore: ObservableObject {
         }.joined(separator: "\n")
         let extra = priorMatches.count > 5 ? "\n…还有 \(priorMatches.count - 5) 个" : ""
         alert.informativeText = """
+        范围：\(scopeDescription)
+
         这次会把 \(fileCount) 个字体文件安装到 /Library/Fonts，需要管理员授权。
 
         其中 \(priorMatches.count) 个字体被检测到在系统里仍有旧版本（依据是规范化前的 PostScript 名）：
@@ -584,6 +854,22 @@ final class FontLibraryStore: ObservableObject {
         case .alertSecondButtonReturn: return .keepOld
         default: return .cancel
         }
+    }
+
+    private func currentScopeDescription() -> String {
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseScope: String
+        switch libraryMode {
+        case .all: baseScope = "所有字体"
+        case .favorites: baseScope = "收藏夹"
+        case .category(let category): baseScope = "分类 “\(category)”"
+        case .status(let status): baseScope = "状态 “\(status.displayName)”"
+        case .selectedFont: baseScope = "当前选中字体"
+        }
+        if trimmedSearch.isEmpty {
+            return baseScope
+        }
+        return "\(baseScope) · 搜索 “\(trimmedSearch)”"
     }
 
     private func shouldRescanAfterNormalization(scopeURL: URL) -> Bool {
@@ -646,6 +932,63 @@ enum InstallDecision {
     case replaceOld
 }
 
+enum DropDecision {
+    case cancel
+    case skipConflicts
+    case overwriteAll
+}
+
+private struct DropExecutionResult: Sendable {
+    let failure: String?
+}
+
+private func evaluateDroppedFiles(
+    urls: [URL],
+    category: String,
+    importedRoot: URL,
+    libraryFonts: [FontItem],
+    importer: FontImportService
+) -> [(URL, Result<FontImportEvaluation, FontImportRejection>)] {
+    urls.map { url in
+        do {
+            let evaluation = try importer.evaluate(
+                sourceURL: url,
+                intoCategory: category,
+                importedRoot: importedRoot,
+                libraryFonts: libraryFonts
+            )
+            return (url, .success(evaluation))
+        } catch let rejection as FontImportRejection {
+            return (url, .failure(rejection))
+        } catch {
+            return (url, .failure(.unreadable(url, error.localizedDescription)))
+        }
+    }
+}
+
+private func performDropImport(
+    removalURLs: [URL],
+    copyOperations: [(source: URL, destination: URL)]
+) -> DropExecutionResult {
+    let fileManager = FileManager.default
+    do {
+        for url in removalURLs where fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+        for operation in copyOperations {
+            let destinationFolder = operation.destination.deletingLastPathComponent()
+            try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: operation.destination.path) {
+                try fileManager.removeItem(at: operation.destination)
+            }
+            try fileManager.copyItem(at: operation.source, to: operation.destination)
+        }
+    } catch {
+        return DropExecutionResult(failure: error.localizedDescription)
+    }
+    return DropExecutionResult(failure: nil)
+}
+
 private let fontFileContentTypes: [UTType] = ["ttf", "otf", "ttc", "otc"].compactMap {
     UTType(filenameExtension: $0)
 }
@@ -658,6 +1001,34 @@ private final class ScanProgressBridge: @unchecked Sendable {
     }
 
     func report(_ progress: FontScanProgress) {
+        Task { @MainActor in
+            update(progress)
+        }
+    }
+}
+
+private final class NormalizeProgressBridge: @unchecked Sendable {
+    private let update: @MainActor (FontNormalizeProgress) -> Void
+
+    init(update: @escaping @MainActor (FontNormalizeProgress) -> Void) {
+        self.update = update
+    }
+
+    func report(_ progress: FontNormalizeProgress) {
+        Task { @MainActor in
+            update(progress)
+        }
+    }
+}
+
+private final class InstallProgressBridge: @unchecked Sendable {
+    private let update: @MainActor (FontInstallProgress) -> Void
+
+    init(update: @escaping @MainActor (FontInstallProgress) -> Void) {
+        self.update = update
+    }
+
+    func report(_ progress: FontInstallProgress) {
         Task { @MainActor in
             update(progress)
         }

@@ -348,7 +348,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
 
     private func metadataText(for font: FontItem) -> String {
         var parts: [String] = []
-        if !font.familyName.isSameDisplayText(as: font.displayName) {
+        if !font.familyName.isSubsumedBy(font.displayName) {
             parts.append(font.familyName)
         }
 
@@ -364,14 +364,19 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         let cleanRelativePath = font.relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let relativeURL = URL(fileURLWithPath: cleanRelativePath)
         let filenameStem = relativeURL.deletingPathExtension().lastPathComponent
-        let category = PathUtilities.category(for: cleanRelativePath)
-        let hasCategory = category != "未分类"
 
-        if filenameStem.isSameDisplayText(as: font.displayName)
-            || filenameStem.isSameDisplayText(as: font.familyName) {
-            return hasCategory ? category : ""
+        if filenameStem.isSubsumedBy(font.displayName)
+            || filenameStem.isSubsumedBy(font.familyName)
+            || font.displayName.isSubsumedBy(filenameStem) {
+            return ""
         }
 
+        // Strip the category prefix because it is already shown as the page
+        // header. Only the part inside the category folder carries new info.
+        let category = font.category
+        if category != "未分类", cleanRelativePath.hasPrefix(category + "/") {
+            return String(cleanRelativePath.dropFirst(category.count + 1))
+        }
         return cleanRelativePath
     }
 
@@ -402,5 +407,22 @@ private extension String {
     func isSameDisplayText(as other: String) -> Bool {
         trimmingCharacters(in: .whitespacesAndNewlines)
             .caseInsensitiveCompare(other.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+    }
+
+    /// `self` is considered "covered" by `other` if `other` already contains the
+    /// same words. Catches family-vs-display redundancy like
+    /// "Alibaba Health Font5.0Braille" vs "Alibaba Health Font5.0Braille R".
+    func isSubsumedBy(_ other: String) -> Bool {
+        let lhs = normalizedDisplayText
+        let rhs = other.normalizedDisplayText
+        guard !lhs.isEmpty, !rhs.isEmpty else { return lhs == rhs }
+        if lhs == rhs { return true }
+        return rhs.contains(lhs)
+    }
+
+    private var normalizedDisplayText: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
     }
 }

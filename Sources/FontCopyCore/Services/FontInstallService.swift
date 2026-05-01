@@ -18,7 +18,11 @@ public struct FontInstallResult: Sendable {
 public struct FontInstallService: Sendable {
     public init() {}
 
-    public func installFonts(_ fonts: [FontItem], removingURLs: [URL] = []) -> FontInstallResult {
+    public func installFonts(
+        _ fonts: [FontItem],
+        removingURLs: [URL] = [],
+        progress: ((FontInstallProgress) -> Void)? = nil
+    ) -> FontInstallResult {
         let installableFonts = uniqueInstallableFiles(from: fonts)
         let skipped = Set(fonts.filter { !$0.installStatus.isInstallable || !$0.isSupportedFontFile }.map(\.fileID))
         let uniqueRemovalURLs = Array(Set(removingURLs.map { $0.standardizedFileURL }))
@@ -27,10 +31,21 @@ public struct FontInstallService: Sendable {
         }
 
         do {
-            let stagedFiles = try stageFontsForPrivilegedInstall(installableFonts, removalURLs: uniqueRemovalURLs)
+            let stagedFiles = try stageFontsForPrivilegedInstall(
+                installableFonts,
+                removalURLs: uniqueRemovalURLs,
+                progress: progress
+            )
             defer {
                 try? FileManager.default.removeItem(at: stagedFiles.stagingDirectory)
             }
+
+            progress?(FontInstallProgress(
+                phase: .applying,
+                processed: stagedFiles.files.count,
+                total: stagedFiles.files.count,
+                currentName: nil
+            ))
 
             let removalCommands = uniqueRemovalURLs.map { url in
                 "/bin/rm -f \(PathUtilities.shellQuoted(url.path))"
@@ -42,6 +57,14 @@ public struct FontInstallService: Sendable {
                 "/bin/mkdir -p /Library/Fonts"
             ] + removalCommands + copyCommands).joined(separator: "\n")
             try runAsAdministrator(command)
+
+            progress?(FontInstallProgress(
+                phase: .verifying,
+                processed: stagedFiles.files.count,
+                total: stagedFiles.files.count,
+                currentName: nil
+            ))
+
             return FontInstallResult(
                 installedFileIDs: Set(installableFonts.map(\.fileID)),
                 skippedFileIDs: skipped,
@@ -54,7 +77,11 @@ public struct FontInstallService: Sendable {
         }
     }
 
-    private func stageFontsForPrivilegedInstall(_ fonts: [FontItem], removalURLs: [URL]) throws -> StagedInstallSet {
+    private func stageFontsForPrivilegedInstall(
+        _ fonts: [FontItem],
+        removalURLs: [URL],
+        progress: ((FontInstallProgress) -> Void)? = nil
+    ) throws -> StagedInstallSet {
         let fileManager = FileManager.default
         let stagingDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("FontCopyInstall-\(UUID().uuidString)", isDirectory: true)
@@ -62,8 +89,21 @@ public struct FontInstallService: Sendable {
 
         let removalPaths = Set(removalURLs.map { $0.standardizedFileURL.path })
         var stagedFiles: [StagedInstallFile] = []
+        let total = fonts.count
+        progress?(FontInstallProgress(
+            phase: .staging,
+            processed: 0,
+            total: total,
+            currentName: fonts.first?.sourceURL.lastPathComponent
+        ))
         do {
-            for font in fonts {
+            for (index, font) in fonts.enumerated() {
+                progress?(FontInstallProgress(
+                    phase: .staging,
+                    processed: index,
+                    total: total,
+                    currentName: font.sourceURL.lastPathComponent
+                ))
                 let destination = try destinationURL(for: font, removalSet: removalPaths)
                 let stagedName = "\(font.fileID.uuidString)-\(font.sourceURL.lastPathComponent)"
                 let stagedURL = stagingDirectory.appendingPathComponent(stagedName)
@@ -72,6 +112,12 @@ public struct FontInstallService: Sendable {
                     fileID: font.fileID,
                     stagedURL: stagedURL,
                     destinationURL: destination
+                ))
+                progress?(FontInstallProgress(
+                    phase: .staging,
+                    processed: index + 1,
+                    total: total,
+                    currentName: index + 1 < total ? fonts[index + 1].sourceURL.lastPathComponent : nil
                 ))
             }
         } catch {

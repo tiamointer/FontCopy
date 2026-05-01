@@ -41,17 +41,46 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: result.backupURL?.path ?? "") == true)
 }
 
-@Test func skipsFontCollectionsForFirstVersion() async throws {
+@Test func rejectsMalformedTTCWithoutCrashing() async throws {
     let tempDirectory = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: tempDirectory) }
 
-    let collectionURL = tempDirectory.appendingPathComponent("集合字体.ttc")
+    let collectionURL = tempDirectory.appendingPathComponent("无效集合.ttc")
     try Data("ttcf".utf8).write(to: collectionURL)
 
     let result = FontNameNormalizerService().normalizeFile(at: collectionURL)
 
-    #expect(result.status == .skipped)
-    #expect(result.message.contains("暂不支持"))
+    #expect(result.status == .failed)
+}
+
+@Test func normalizesTTCFontAndPreservesEachSubfontStyle() async throws {
+    let tempDirectory = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let ttcURL = tempDirectory.appendingPathComponent("阿里测试体.ttc")
+    try FileManager.default.copyItem(at: try systemTTCFont(), to: ttcURL)
+
+    let priorMetadata = FontMetadataReader.metadata(for: ttcURL)
+    try #require(priorMetadata.count >= 2, "Test requires a TTC with at least 2 subfonts")
+    let priorStyles = priorMetadata.compactMap(\.styleName)
+
+    let result = FontNameNormalizerService().normalizeFile(at: ttcURL)
+
+    #expect(result.status == .success)
+    #expect(result.targetName == "阿里测试体")
+    #expect(result.backupURL?.lastPathComponent == "阿里测试体.ttc.bak")
+
+    let postMetadata = FontMetadataReader.metadata(for: ttcURL)
+    #expect(postMetadata.count == priorMetadata.count)
+    #expect(postMetadata.allSatisfy { $0.familyName == "阿里测试体" })
+    let newPostScripts = Set(postMetadata.map(\.postScriptName))
+    #expect(newPostScripts.count == postMetadata.count)
+    #expect(newPostScripts.allSatisfy { $0.hasPrefix("FontCopy-") })
+
+    if !priorStyles.isEmpty {
+        let postStyles = postMetadata.compactMap(\.styleName)
+        #expect(postStyles.count >= priorStyles.count)
+    }
 }
 
 @Test func normalizerSkipsBackupNamedFontFiles() async throws {
@@ -116,6 +145,18 @@ private func systemTTFFont() throws -> URL {
         "/System/Library/Fonts/Supplemental/Georgia.ttf",
         "/System/Library/Fonts/Geneva.ttf",
         "/System/Library/Fonts/SFNS.ttf"
+    ]
+    guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        throw TestFontError.missingSystemFont
+    }
+    return URL(fileURLWithPath: path)
+}
+
+private func systemTTCFont() throws -> URL {
+    let candidates = [
+        "/System/Library/Fonts/ArialHB.ttc",
+        "/System/Library/Fonts/Avenir.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc"
     ]
     guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
         throw TestFontError.missingSystemFont

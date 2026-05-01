@@ -16,11 +16,11 @@ import Testing
     #expect(!font.canNormalizeInternalName)
 }
 
-@Test func fontCollectionsAreNotOfferedForNameNormalization() async throws {
+@Test func fontCollectionsAreOfferedForNameNormalization() async throws {
     let font = makeFontItem(fileName: "集合字体.ttc", displayName: "Collection Internal", familyName: "Collection Internal")
 
     #expect(font.hasMismatchedInternalName)
-    #expect(!font.canNormalizeInternalName)
+    #expect(font.canNormalizeInternalName)
 }
 
 private func makeFontItem(fileName: String, displayName: String, familyName: String) -> FontItem {
