@@ -76,13 +76,27 @@ struct PreviewPaneView: View {
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "textformat")
-                .font(.system(size: 54))
-                .foregroundStyle(.secondary)
-            Text("欢迎使用字体预览器")
-                .font(.title2.weight(.semibold))
-            Text("点击工具栏的“导入文件夹”开始扫描本机字体资产。")
-                .foregroundStyle(.secondary)
+            if store.isScanning {
+                ProgressView(value: store.scanProgressFraction)
+                    .frame(width: 260)
+                Text(store.scanProgressText)
+                    .font(.title3.weight(.semibold))
+                if let currentPath = store.scanProgress?.currentPath {
+                    Text(currentPath)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 420)
+                }
+            } else {
+                Image(systemName: "textformat")
+                    .font(.system(size: 54))
+                    .foregroundStyle(.secondary)
+                Text("欢迎使用字体预览器")
+                    .font(.title2.weight(.semibold))
+                Text("点击工具栏的“导入文件夹”开始扫描本机字体资产。")
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

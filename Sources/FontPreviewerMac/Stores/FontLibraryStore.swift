@@ -19,6 +19,7 @@ final class FontLibraryStore: ObservableObject {
     @Published var searchText = ""
     @Published var isScanning = false
     @Published var isInstalling = false
+    @Published var scanProgress: FontScanProgress?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
     @Published var clipboardAnalysis: ClipboardAnalysis?
@@ -39,6 +40,8 @@ final class FontLibraryStore: ObservableObject {
     private var favoritePostScriptNames: Set<String>
     private var comparedPostScriptNames: Set<String>
     private var lastImportedFolder: URL?
+    private var didAttemptSessionRestore = false
+    private var activeScanID: UUID?
 
     init() {
         previewText = defaults.string(forKey: Keys.previewText) ?? "一石二鸟 2 birds 1 stone"
@@ -73,6 +76,18 @@ final class FontLibraryStore: ObservableObject {
 
     var installableFonts: [FontItem] {
         fonts.filter { $0.installStatus.isInstallable && $0.isSupportedFontFile }
+    }
+
+    var canRescan: Bool {
+        !isScanning && (lastImportedFolder != nil || !fonts.isEmpty)
+    }
+
+    var scanProgressFraction: Double {
+        scanProgress?.fractionCompleted ?? 0
+    }
+
+    var scanProgressText: String {
+        scanProgress?.displayText ?? "扫描字体中..."
     }
 
     var categories: [(String, Int)] {
@@ -146,28 +161,62 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
-    func scanFolder(_ url: URL) async {
+    func restoreLastFolderIfAvailable() async {
+        guard !didAttemptSessionRestore else { return }
+        didAttemptSessionRestore = true
+        guard fonts.isEmpty, let lastImportedFolder else { return }
+
+        guard FileManager.default.fileExists(atPath: lastImportedFolder.path) else {
+            statusMessage = "上次字体文件夹不可访问，请重新导入。"
+            return
+        }
+
+        await scanFolder(lastImportedFolder, reason: "正在恢复上次字体文件夹")
+    }
+
+    func scanFolder(_ url: URL, reason: String = "扫描字体中") async {
         isScanning = true
         errorMessage = nil
+        scanProgress = FontScanProgress(processed: 0, total: 0, currentPath: nil)
+        statusMessage = reason
         lastImportedFolder = url
         defaults.set(url.path, forKey: Keys.lastFolder)
+        let scanID = UUID()
+        activeScanID = scanID
 
         do {
             let favorites = favoritePostScriptNames
             let compared = comparedPostScriptNames
             let scanner = scanner
+            let progressBridge = ScanProgressBridge { [weak self] progress in
+                guard let self else { return }
+                guard self.activeScanID == scanID else { return }
+                self.scanProgress = progress
+                self.statusMessage = progress.displayText
+            }
             let result = try await Task.detached(priority: .userInitiated) {
-                try scanner.scanFolder(at: url, favorites: favorites, compared: compared)
+                try scanner.scanFolder(
+                    at: url,
+                    favorites: favorites,
+                    compared: compared,
+                    progress: progressBridge.report
+                )
             }.value
 
             fonts = result.fonts
             skippedFiles = result.skipped
+            activeScanID = nil
+            scanProgress = nil
+            statusMessage = "已加载 \(result.fonts.count) 个字体"
             if selectedFontID == nil {
                 selectedFontID = result.fonts.first?.id
             }
             reconcileSelection()
         } catch {
+            activeScanID = nil
+            scanProgress = nil
             errorMessage = error.localizedDescription
+            statusMessage = "扫描失败：\(error.localizedDescription)"
         }
 
         isScanning = false
@@ -355,4 +404,18 @@ private enum Keys {
     static let favorites = "favorite-postscript-names"
     static let compared = "compared-postscript-names"
     static let lastFolder = "last-imported-folder"
+}
+
+private final class ScanProgressBridge: @unchecked Sendable {
+    private let update: @MainActor (FontScanProgress) -> Void
+
+    init(update: @escaping @MainActor (FontScanProgress) -> Void) {
+        self.update = update
+    }
+
+    func report(_ progress: FontScanProgress) {
+        Task { @MainActor in
+            update(progress)
+        }
+    }
 }

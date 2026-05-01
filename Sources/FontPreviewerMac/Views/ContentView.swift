@@ -23,7 +23,7 @@ struct ContentView: View {
                 } label: {
                     Label("重新检测", systemImage: "arrow.clockwise")
                 }
-                .disabled(store.fonts.isEmpty || store.isScanning)
+                .disabled(!store.canRescan)
 
                 Button {
                     store.installAllMissing()
@@ -42,6 +42,9 @@ struct ContentView: View {
         .sheet(isPresented: $store.isClipboardInspectorPresented) {
             ClipboardInspectorView(store: store)
                 .frame(width: 760, height: 620)
+        }
+        .task {
+            await store.restoreLastFolderIfAvailable()
         }
         .alert("字体预览器", isPresented: Binding(
             get: { store.errorMessage != nil },

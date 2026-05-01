@@ -7,18 +7,25 @@ public struct FontScannerService: Sendable {
     public func scanFolder(
         at rootURL: URL,
         favorites: Set<String>,
-        compared: Set<String>
+        compared: Set<String>,
+        progress: ((FontScanProgress) -> Void)? = nil
     ) throws -> FontScanResult {
         let installedSnapshot = InstalledFontService().snapshot()
         let fileURLs = try collectFontFiles(in: rootURL)
         var fonts: [FontItem] = []
         var skipped: [SkippedFontFile] = []
+        var processed = 0
+        progress?(FontScanProgress(processed: processed, total: fileURLs.count, currentPath: nil))
 
         for fileURL in fileURLs {
             let ext = fileURL.pathExtension.lowercased()
             let relativePath = PathUtilities.relativePath(for: fileURL, rootURL: rootURL)
             let category = PathUtilities.category(for: relativePath)
             let fileID = UUID()
+            defer {
+                processed += 1
+                progress?(FontScanProgress(processed: processed, total: fileURLs.count, currentPath: relativePath))
+            }
 
             guard FontItem.supportedExtensions.contains(ext) else {
                 let fallbackName = fileURL.deletingPathExtension().lastPathComponent
