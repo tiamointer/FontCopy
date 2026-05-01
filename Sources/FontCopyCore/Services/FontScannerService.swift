@@ -108,6 +108,7 @@ public struct FontScannerService: Sendable {
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
             guard values?.isRegularFile == true else { continue }
+            guard !PathUtilities.isFontCopyBackupFile(url) else { continue }
             guard FontItem.fontLikeExtensions.contains(url.pathExtension.lowercased()) else { continue }
             urls.append(url)
         }

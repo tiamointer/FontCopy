@@ -13,6 +13,26 @@ struct SidebarView: View {
                 controls
             }
 
+            Section("工具") {
+                Menu {
+                    Button {
+                        store.normalizeSingleFontFile()
+                    } label: {
+                        Label("选择单个字体文件...", systemImage: "doc")
+                    }
+
+                    Button {
+                        store.normalizeFontFolder()
+                    } label: {
+                        Label("选择文件夹批量处理...", systemImage: "folder")
+                    }
+                } label: {
+                    Label("规范化字体名称", systemImage: "pencil.and.outline")
+                }
+                .disabled(store.isScanning || store.isInstalling || store.isNormalizingFontNames)
+                .help("只改写字体文件内部名称，不会安装字体")
+            }
+
             Section("库") {
                 Label("所有字体", systemImage: "textformat")
                     .badge(store.fonts.count)
@@ -109,7 +129,7 @@ private struct FontSidebarRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(font.displayName)
                     .lineLimit(1)
-                Text(font.postScriptName)
+                Text(font.familyName == font.displayName ? font.relativePath : font.familyName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

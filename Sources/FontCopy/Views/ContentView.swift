@@ -25,12 +25,31 @@ struct ContentView: View {
                 }
                 .disabled(!store.canRescan)
 
+                Menu {
+                    Button {
+                        store.normalizeSingleFontFile()
+                    } label: {
+                        Label("选择字体文件...", systemImage: "doc")
+                    }
+
+                    Button {
+                        store.normalizeFontFolder()
+                    } label: {
+                        Label("选择文件夹批量处理...", systemImage: "folder")
+                    }
+                } label: {
+                    Label("规范化字体名称", systemImage: "pencil.and.outline")
+                }
+                .disabled(store.isScanning || store.isInstalling || store.isNormalizingFontNames)
+                .help("只改写字体文件内部名称，不会安装字体")
+
                 Button {
-                    store.installAllMissing()
+                    store.confirmAndInstallAllMissing()
                 } label: {
                     Label("安装全部未安装", systemImage: "square.and.arrow.down")
                 }
-                .disabled(store.installableFonts.isEmpty || store.isInstalling)
+                .disabled(store.installableFonts.isEmpty || store.isInstalling || store.isNormalizingFontNames)
+                .help("批量安装到 /Library/Fonts，会先显示确认")
 
                 Button {
                     store.presentClipboardInspector()

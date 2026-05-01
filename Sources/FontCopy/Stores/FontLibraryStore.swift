@@ -1,6 +1,7 @@
 import AppKit
 import FontCopyCore
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 final class FontLibraryStore: ObservableObject {
@@ -19,6 +20,7 @@ final class FontLibraryStore: ObservableObject {
     @Published var searchText = ""
     @Published var isScanning = false
     @Published var isInstalling = false
+    @Published var isNormalizingFontNames = false
     @Published var scanProgress: FontScanProgress?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
@@ -36,6 +38,7 @@ final class FontLibraryStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private let scanner = FontScannerService()
     private let installer = FontInstallService()
+    private let nameNormalizer = FontNameNormalizerService()
     private let pasteboard = PasteboardService()
     private var favoritePostScriptNames: Set<String>
     private var comparedPostScriptNames: Set<String>
@@ -295,7 +298,7 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
-    func installAllMissing() {
+    func confirmAndInstallAllMissing() {
         let targets = installableFonts
         guard !targets.isEmpty else {
             statusMessage = "没有可安装的缺失字体。"
@@ -303,9 +306,50 @@ final class FontLibraryStore: ObservableObject {
         }
 
         let fileCount = Set(targets.map(\.fileID)).count
+        guard confirmBulkInstall(fileCount: fileCount, fontCount: targets.count) else { return }
+
         statusMessage = "准备批量安装 \(fileCount) 个字体文件..."
         Task {
             await installFonts(targets, label: "\(fileCount) 个字体文件")
+        }
+    }
+
+    func normalizeSingleFontFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = fontFileContentTypes
+        panel.prompt = "选择字体文件"
+        panel.message = "选择要写入内部名称的字体文件。"
+        if let lastImportedFolder {
+            panel.directoryURL = lastImportedFolder
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard confirmFontNameNormalization(targetDescription: url.lastPathComponent) else { return }
+
+        Task {
+            await normalizeFontNames(scopeURL: url, mode: .singleFile(url))
+        }
+    }
+
+    func normalizeFontFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择文件夹"
+        panel.message = "批量规范化此文件夹内 .ttf/.otf 字体的内部名称。"
+        if let lastImportedFolder {
+            panel.directoryURL = lastImportedFolder
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard confirmFontNameNormalization(targetDescription: url.lastPathComponent) else { return }
+
+        Task {
+            await normalizeFontNames(scopeURL: url, mode: .folder(url))
         }
     }
 
@@ -380,6 +424,80 @@ final class FontLibraryStore: ObservableObject {
         isInstalling = false
     }
 
+    private enum FontNameNormalizationMode: Sendable {
+        case singleFile(URL)
+        case folder(URL)
+    }
+
+    private func normalizeFontNames(scopeURL: URL, mode: FontNameNormalizationMode) async {
+        isNormalizingFontNames = true
+        errorMessage = nil
+        statusMessage = "正在规范化字体名称..."
+
+        let normalizer = nameNormalizer
+        let report = await Task.detached(priority: .userInitiated) {
+            switch mode {
+            case .singleFile(let url):
+                return FontNameNormalizationReport(results: [normalizer.normalizeFile(at: url)])
+            case .folder(let url):
+                return normalizer.normalizeFolder(at: url)
+            }
+        }.value
+
+        isNormalizingFontNames = false
+        statusMessage = report.summary
+        if report.failedCount > 0 || report.skippedCount > 0 {
+            errorMessage = report.detailMessage
+        }
+
+        if report.successCount > 0, shouldRescanAfterNormalization(scopeURL: scopeURL), let lastImportedFolder {
+            await scanFolder(lastImportedFolder, reason: "正在刷新改名后的字体")
+            statusMessage = "\(report.summary)，已刷新字体库"
+        }
+    }
+
+    private func confirmFontNameNormalization(targetDescription: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "规范化字体名称"
+        alert.informativeText = """
+        这不会安装字体。
+
+        FontCopy 会根据文件名改写字体内部名称，并在同级目录创建 .bak 备份。
+
+        目标：\(targetDescription)
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "继续")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func confirmBulkInstall(fileCount: Int, fontCount: Int) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "确认安装全部未安装字体？"
+        alert.informativeText = """
+        这会把 \(fileCount) 个字体文件安装到 /Library/Fonts，并需要管理员授权。
+
+        如果你还需要先“规范化字体名称”，请取消并先使用侧边栏“工具”里的规范化功能。
+
+        涉及字体条目：\(fontCount)
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "确认安装")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func shouldRescanAfterNormalization(scopeURL: URL) -> Bool {
+        guard let lastImportedFolder else { return false }
+        let scopePath = scopeURL.standardizedFileURL.path
+        let libraryPath = lastImportedFolder.standardizedFileURL.path
+        if scopePath == libraryPath { return true }
+        if scopePath.hasPrefix(libraryPath + "/") { return true }
+        if libraryPath.hasPrefix(scopePath + "/") { return true }
+        return false
+    }
+
     private func filteredBySearch(_ source: [FontItem]) -> [FontItem] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return source }
@@ -416,6 +534,10 @@ private enum Keys {
     static let favorites = "favorite-postscript-names"
     static let compared = "compared-postscript-names"
     static let lastFolder = "last-imported-folder"
+}
+
+private let fontFileContentTypes: [UTType] = ["ttf", "otf", "ttc", "otc"].compactMap {
+    UTType(filenameExtension: $0)
 }
 
 private final class ScanProgressBridge: @unchecked Sendable {

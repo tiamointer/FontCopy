@@ -53,7 +53,7 @@ struct PreviewPaneView: View {
 
             Spacer()
 
-            if store.isInstalling {
+            if store.isInstalling || store.isNormalizingFontNames {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -64,9 +64,10 @@ struct PreviewPaneView: View {
             .disabled(store.comparedFonts.isEmpty)
 
             Button("安装全部未安装") {
-                store.installAllMissing()
+                store.confirmAndInstallAllMissing()
             }
-            .disabled(store.installableFonts.isEmpty || store.isInstalling)
+            .disabled(store.installableFonts.isEmpty || store.isInstalling || store.isNormalizingFontNames)
+            .help("批量安装到 /Library/Fonts，会先显示确认")
         }
     }
 

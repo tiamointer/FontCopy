@@ -252,7 +252,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         self.actionHandler = actionHandler
 
         titleLabel.stringValue = font.displayName
-        metadataLabel.stringValue = "\(font.postScriptName) · \(font.relativePath)"
+        metadataLabel.stringValue = "\(font.familyName) · \(font.relativePath)"
         statusLabel.stringValue = font.installStatus.displayName
         statusLabel.textColor = color(for: font.installStatus)
         previewTextView.configure(

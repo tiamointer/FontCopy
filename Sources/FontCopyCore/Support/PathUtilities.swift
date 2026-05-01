@@ -31,4 +31,14 @@ public enum PathUtilities {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
+
+    public static func isFontCopyBackupFile(_ fileURL: URL) -> Bool {
+        fileURL.lastPathComponent
+            .lowercased()
+            .split(separator: ".")
+            .dropFirst()
+            .contains { component in
+                component == "bak" || component.hasPrefix("bak-")
+            }
+    }
 }
