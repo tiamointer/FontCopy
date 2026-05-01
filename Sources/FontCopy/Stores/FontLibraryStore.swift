@@ -306,12 +306,52 @@ final class FontLibraryStore: ObservableObject {
         }
 
         let fileCount = Set(targets.map(\.fileID)).count
-        guard confirmBulkInstall(fileCount: fileCount, fontCount: targets.count) else { return }
+        statusMessage = "正在检测系统中是否存在旧版本..."
 
-        statusMessage = "准备批量安装 \(fileCount) 个字体文件..."
         Task {
-            await installFonts(targets, label: "\(fileCount) 个字体文件")
+            let priorMatches = await detectPriorInstalledMatches(for: targets)
+            let decision = await MainActor.run {
+                presentInstallConfirmation(
+                    fileCount: fileCount,
+                    fontCount: targets.count,
+                    priorMatches: priorMatches
+                )
+            }
+            switch decision {
+            case .cancel:
+                statusMessage = nil
+                return
+            case .keepOld:
+                statusMessage = "准备批量安装 \(fileCount) 个字体文件..."
+                await installFonts(targets, label: "\(fileCount) 个字体文件", removingURLs: [])
+            case .replaceOld:
+                let removalURLs = Array(Set(priorMatches.flatMap { $0.removableInstalledURLs }))
+                statusMessage = "准备批量安装 \(fileCount) 个并移除 \(removalURLs.count) 个旧版本文件..."
+                await installFonts(targets, label: "\(fileCount) 个字体文件", removingURLs: removalURLs)
+            }
         }
+    }
+
+    nonisolated private func detectPriorInstalledMatches(for fonts: [FontItem]) async -> [PriorInstalledMatch] {
+        await Task.detached(priority: .userInitiated) {
+            let snapshot = InstalledFontService().snapshot()
+            var matches: [PriorInstalledMatch] = []
+            var seenSourcePaths = Set<String>()
+            for font in fonts {
+                let path = font.sourceURL.standardizedFileURL.path
+                guard !seenSourcePaths.contains(path) else { continue }
+                seenSourcePaths.insert(path)
+                guard let prior = PriorFontIdentityResolver.resolve(for: font.sourceURL) else { continue }
+                let removableURLs = snapshot.removableInstalledURLs(forPostScriptName: prior.postScriptName)
+                guard !removableURLs.isEmpty else { continue }
+                matches.append(PriorInstalledMatch(
+                    font: font,
+                    prior: prior,
+                    removableInstalledURLs: removableURLs
+                ))
+            }
+            return matches
+        }.value
     }
 
     func normalizeSingleFontFile() {
@@ -388,7 +428,7 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
-    private func installFonts(_ targetFonts: [FontItem], label: String) async {
+    private func installFonts(_ targetFonts: [FontItem], label: String, removingURLs: [URL] = []) async {
         let uniqueFileIDs = Set(targetFonts.map(\.fileID))
         guard !uniqueFileIDs.isEmpty else { return }
         isInstalling = true
@@ -401,8 +441,9 @@ final class FontLibraryStore: ObservableObject {
         }
 
         let installer = installer
+        let urlsToRemove = removingURLs
         let result = await Task.detached(priority: .userInitiated) {
-            installer.installFonts(targetFonts)
+            installer.installFonts(targetFonts, removingURLs: urlsToRemove)
         }.value
 
         let installedSnapshot = await Task.detached(priority: .userInitiated) {
@@ -429,7 +470,11 @@ final class FontLibraryStore: ObservableObject {
             statusMessage = "安装失败：\(message)"
             errorMessage = message
         } else if !result.installedFileIDs.isEmpty {
-            statusMessage = "已安装 \(result.installedFileIDs.count) 个字体文件。"
+            if result.removedURLs.isEmpty {
+                statusMessage = "已安装 \(result.installedFileIDs.count) 个字体文件。"
+            } else {
+                statusMessage = "已安装 \(result.installedFileIDs.count) 个字体文件，并移除 \(result.removedURLs.count) 个旧版本。"
+            }
         } else if !result.skippedFileIDs.isEmpty {
             statusMessage = "没有字体需要安装。"
         }
@@ -484,20 +529,61 @@ final class FontLibraryStore: ObservableObject {
         return alert.runModal() == .alertSecondButtonReturn
     }
 
-    private func confirmBulkInstall(fileCount: Int, fontCount: Int) -> Bool {
+    private func presentInstallConfirmation(
+        fileCount: Int,
+        fontCount: Int,
+        priorMatches: [PriorInstalledMatch]
+    ) -> InstallDecision {
         let alert = NSAlert()
-        alert.messageText = "确认安装全部未安装字体？"
-        alert.informativeText = """
-        这会把 \(fileCount) 个字体文件安装到 /Library/Fonts，并需要管理员授权。
-
-        如果你还需要先“规范化字体名称”，请取消并先使用侧边栏“工具”里的规范化功能。
-
-        涉及字体条目：\(fontCount)
-        """
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "取消")
-        alert.addButton(withTitle: "确认安装")
-        return alert.runModal() == .alertSecondButtonReturn
+
+        if priorMatches.isEmpty {
+            alert.messageText = "确认安装全部未安装字体？"
+            alert.informativeText = """
+            这会把 \(fileCount) 个字体文件安装到 /Library/Fonts，并需要管理员授权。
+
+            如果你还需要先“规范化字体名称”，请取消并先使用侧边栏“工具”里的规范化功能。
+
+            涉及字体条目：\(fontCount)
+            """
+            let install = alert.addButton(withTitle: "确认安装")
+            install.keyEquivalent = "\r"
+            let cancel = alert.addButton(withTitle: "取消")
+            cancel.keyEquivalent = "\u{1b}"
+
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: return .keepOld
+            default: return .cancel
+            }
+        }
+
+        let removalCount = Set(priorMatches.flatMap { $0.removableInstalledURLs }).count
+        alert.messageText = "检测到 \(priorMatches.count) 个字体在系统中存在旧版本"
+        let preview = priorMatches.prefix(5).map { match in
+            let oldFile = match.removableInstalledURLs.first?.lastPathComponent ?? "未知"
+            return "• \(match.font.displayName)  ← \(oldFile)（旧 PostScript：\(match.prior.postScriptName)）"
+        }.joined(separator: "\n")
+        let extra = priorMatches.count > 5 ? "\n…还有 \(priorMatches.count - 5) 个" : ""
+        alert.informativeText = """
+        这次会把 \(fileCount) 个字体文件安装到 /Library/Fonts，需要管理员授权。
+
+        其中 \(priorMatches.count) 个字体被检测到在系统里仍有旧版本（依据是规范化前的 PostScript 名）：
+        \(preview)\(extra)
+
+        选择「移除旧版」会在安装时一并删除上述 \(removalCount) 个旧文件，避免字体库重复。
+        旧 PostScript 名将不再可用，请确认没有项目仍按旧名引用。
+        """
+        let replace = alert.addButton(withTitle: "移除旧版并安装")
+        replace.keyEquivalent = "\r"
+        alert.addButton(withTitle: "只安装新版（保留旧版）")
+        let cancel = alert.addButton(withTitle: "取消")
+        cancel.keyEquivalent = "\u{1b}"
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .replaceOld
+        case .alertSecondButtonReturn: return .keepOld
+        default: return .cancel
+        }
     }
 
     private func shouldRescanAfterNormalization(scopeURL: URL) -> Bool {
@@ -546,6 +632,18 @@ private enum Keys {
     static let favorites = "favorite-postscript-names"
     static let compared = "compared-postscript-names"
     static let lastFolder = "last-imported-folder"
+}
+
+struct PriorInstalledMatch: Sendable {
+    let font: FontItem
+    let prior: PriorFontIdentity
+    let removableInstalledURLs: [URL]
+}
+
+enum InstallDecision {
+    case cancel
+    case keepOld
+    case replaceOld
 }
 
 private let fontFileContentTypes: [UTType] = ["ttf", "otf", "ttc", "otc"].compactMap {

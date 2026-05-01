@@ -39,6 +39,8 @@ public struct FontNameNormalizationResult: Sendable {
     public let targetName: String?
     public let postScriptName: String?
     public let backupURL: URL?
+    public let priorPostScriptName: String?
+    public let priorFamilyName: String?
     public let message: String
 
     public init(
@@ -47,6 +49,8 @@ public struct FontNameNormalizationResult: Sendable {
         targetName: String?,
         postScriptName: String?,
         backupURL: URL?,
+        priorPostScriptName: String? = nil,
+        priorFamilyName: String? = nil,
         message: String
     ) {
         self.fileURL = fileURL
@@ -54,6 +58,8 @@ public struct FontNameNormalizationResult: Sendable {
         self.targetName = targetName
         self.postScriptName = postScriptName
         self.backupURL = backupURL
+        self.priorPostScriptName = priorPostScriptName
+        self.priorFamilyName = priorFamilyName
         self.message = message
     }
 }
@@ -85,6 +91,8 @@ public struct FontNameNormalizerService: Sendable {
             return failed(url, "文件名为空，无法生成字体名称")
         }
 
+        let priorMetadata = FontMetadataReader.metadata(for: url).first
+
         do {
             let originalData = try Data(contentsOf: url, options: [.mappedIfSafe])
             let hash = Self.stableShortHash(for: "\(url.standardizedFileURL.path)|\(targetName)")
@@ -103,6 +111,8 @@ public struct FontNameNormalizerService: Sendable {
                 targetName: targetName,
                 postScriptName: postScriptName,
                 backupURL: backupURL,
+                priorPostScriptName: priorMetadata?.postScriptName,
+                priorFamilyName: priorMetadata?.familyName,
                 message: "已写入内部名称“\(targetName)”"
             )
         } catch {

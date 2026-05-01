@@ -5,42 +5,48 @@ public struct FontInstallResult: Sendable {
     public let installedFileIDs: Set<UUID>
     public let skippedFileIDs: Set<UUID>
     public let failed: [UUID: String]
+    public let removedURLs: [URL]
 
-    public init(installedFileIDs: Set<UUID>, skippedFileIDs: Set<UUID>, failed: [UUID: String]) {
+    public init(installedFileIDs: Set<UUID>, skippedFileIDs: Set<UUID>, failed: [UUID: String], removedURLs: [URL] = []) {
         self.installedFileIDs = installedFileIDs
         self.skippedFileIDs = skippedFileIDs
         self.failed = failed
+        self.removedURLs = removedURLs
     }
 }
 
 public struct FontInstallService: Sendable {
     public init() {}
 
-    public func installFonts(_ fonts: [FontItem]) -> FontInstallResult {
+    public func installFonts(_ fonts: [FontItem], removingURLs: [URL] = []) -> FontInstallResult {
         let installableFonts = uniqueInstallableFiles(from: fonts)
         let skipped = Set(fonts.filter { !$0.installStatus.isInstallable || !$0.isSupportedFontFile }.map(\.fileID))
+        let uniqueRemovalURLs = Array(Set(removingURLs.map { $0.standardizedFileURL }))
         guard !installableFonts.isEmpty else {
             return FontInstallResult(installedFileIDs: [], skippedFileIDs: skipped, failed: [:])
         }
 
         do {
-            let stagedFiles = try stageFontsForPrivilegedInstall(installableFonts)
+            let stagedFiles = try stageFontsForPrivilegedInstall(installableFonts, removalURLs: uniqueRemovalURLs)
             defer {
                 try? FileManager.default.removeItem(at: stagedFiles.stagingDirectory)
             }
 
+            let removalCommands = uniqueRemovalURLs.map { url in
+                "/bin/rm -f \(PathUtilities.shellQuoted(url.path))"
+            }
             let copyCommands = stagedFiles.files.map { stagedFile in
                 "/bin/cp -p \(PathUtilities.shellQuoted(stagedFile.stagedURL.path)) \(PathUtilities.shellQuoted(stagedFile.destinationURL.path))"
             }
-            let command = """
-            /bin/mkdir -p /Library/Fonts
-            \(copyCommands.joined(separator: "\n"))
-            """
+            let command = ([
+                "/bin/mkdir -p /Library/Fonts"
+            ] + removalCommands + copyCommands).joined(separator: "\n")
             try runAsAdministrator(command)
             return FontInstallResult(
                 installedFileIDs: Set(installableFonts.map(\.fileID)),
                 skippedFileIDs: skipped,
-                failed: [:]
+                failed: [:],
+                removedURLs: uniqueRemovalURLs
             )
         } catch {
             let failed = Dictionary(uniqueKeysWithValues: installableFonts.map { ($0.fileID, error.localizedDescription) })
@@ -48,16 +54,17 @@ public struct FontInstallService: Sendable {
         }
     }
 
-    private func stageFontsForPrivilegedInstall(_ fonts: [FontItem]) throws -> StagedInstallSet {
+    private func stageFontsForPrivilegedInstall(_ fonts: [FontItem], removalURLs: [URL]) throws -> StagedInstallSet {
         let fileManager = FileManager.default
         let stagingDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("FontCopyInstall-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
 
+        let removalPaths = Set(removalURLs.map { $0.standardizedFileURL.path })
         var stagedFiles: [StagedInstallFile] = []
         do {
             for font in fonts {
-                let destination = try destinationURL(for: font)
+                let destination = try destinationURL(for: font, removalSet: removalPaths)
                 let stagedName = "\(font.fileID.uuidString)-\(font.sourceURL.lastPathComponent)"
                 let stagedURL = stagingDirectory.appendingPathComponent(stagedName)
                 try fileManager.copyItem(at: font.sourceURL, to: stagedURL)
@@ -88,20 +95,21 @@ public struct FontInstallService: Sendable {
         return unique
     }
 
-    private func destinationURL(for font: FontItem) throws -> URL {
+    private func destinationURL(for font: FontItem, removalSet: Set<String>) throws -> URL {
         let fontsDirectory = URL(fileURLWithPath: "/Library/Fonts", isDirectory: true)
         let ext = font.sourceURL.pathExtension
         let baseName = font.sourceURL.deletingPathExtension().lastPathComponent
         var candidate = fontsDirectory.appendingPathComponent(font.sourceURL.lastPathComponent)
 
-        if !FileManager.default.fileExists(atPath: candidate.path) {
+        if !FileManager.default.fileExists(atPath: candidate.path) || removalSet.contains(candidate.standardizedFileURL.path) {
             return candidate
         }
 
         let shortHash = FileHash.shortHash(font.fileHash.isEmpty ? UUID().uuidString : font.fileHash)
         candidate = fontsDirectory.appendingPathComponent("\(baseName)-\(shortHash).\(ext)")
         var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
+        while FileManager.default.fileExists(atPath: candidate.path),
+              !removalSet.contains(candidate.standardizedFileURL.path) {
             candidate = fontsDirectory.appendingPathComponent("\(baseName)-\(shortHash)-\(counter).\(ext)")
             counter += 1
         }
