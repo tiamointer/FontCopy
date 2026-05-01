@@ -20,6 +20,7 @@ final class FontLibraryStore: ObservableObject {
     @Published var isScanning = false
     @Published var isInstalling = false
     @Published var errorMessage: String?
+    @Published var statusMessage: String?
     @Published var clipboardAnalysis: ClipboardAnalysis?
     @Published var isClipboardInspectorPresented = false
 
@@ -185,6 +186,7 @@ final class FontLibraryStore: ObservableObject {
     }
 
     func toggleFavorite(_ font: FontItem) {
+        statusMessage = nil
         if favoritePostScriptNames.contains(font.postScriptName) {
             favoritePostScriptNames.remove(font.postScriptName)
         } else {
@@ -195,6 +197,7 @@ final class FontLibraryStore: ObservableObject {
     }
 
     func toggleCompare(_ font: FontItem) {
+        statusMessage = nil
         if comparedPostScriptNames.contains(font.postScriptName) {
             comparedPostScriptNames.remove(font.postScriptName)
         } else {
@@ -217,14 +220,32 @@ final class FontLibraryStore: ObservableObject {
     }
 
     func install(_ font: FontItem) {
+        guard font.isSupportedFontFile else {
+            statusMessage = "「\(font.displayName)」不是 macOS 可直接安装的字体格式。"
+            return
+        }
+        guard font.installStatus.isInstallable else {
+            statusMessage = "「\(font.displayName)」当前状态为“\(font.installStatus.displayName)”，不需要单独安装。"
+            return
+        }
+
+        statusMessage = "准备安装「\(font.displayName)」..."
         Task {
-            await installFonts([font])
+            await installFonts([font], label: "「\(font.displayName)」")
         }
     }
 
     func installAllMissing() {
+        let targets = installableFonts
+        guard !targets.isEmpty else {
+            statusMessage = "没有可安装的缺失字体。"
+            return
+        }
+
+        let fileCount = Set(targets.map(\.fileID)).count
+        statusMessage = "准备批量安装 \(fileCount) 个字体文件..."
         Task {
-            await installFonts(installableFonts)
+            await installFonts(targets, label: "\(fileCount) 个字体文件")
         }
     }
 
@@ -250,11 +271,12 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
-    private func installFonts(_ targetFonts: [FontItem]) async {
+    private func installFonts(_ targetFonts: [FontItem], label: String) async {
         let uniqueFileIDs = Set(targetFonts.map(\.fileID))
         guard !uniqueFileIDs.isEmpty else { return }
         isInstalling = true
         errorMessage = nil
+        statusMessage = "正在请求管理员授权安装 \(label)..."
 
         for index in fonts.indices where uniqueFileIDs.contains(fonts[index].fileID) && fonts[index].installStatus.isInstallable {
             fonts[index].installStatus = .installing
@@ -283,7 +305,13 @@ final class FontLibraryStore: ObservableObject {
         }
 
         if !result.failed.isEmpty {
-            errorMessage = result.failed.values.first
+            let message = result.failed.values.first ?? "安装失败"
+            statusMessage = "安装失败：\(message)"
+            errorMessage = message
+        } else if !result.installedFileIDs.isEmpty {
+            statusMessage = "已安装 \(result.installedFileIDs.count) 个字体文件。"
+        } else if !result.skippedFileIDs.isEmpty {
+            statusMessage = "没有字体需要安装。"
         }
         isInstalling = false
     }

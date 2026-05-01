@@ -67,7 +67,11 @@ struct PreviewPaneView: View {
     }
 
     private var summaryText: String {
-        "\(store.visibleFonts.count) 个字体 · 未安装 \(store.missingCount) · 冲突 \(store.conflictCount) · 不支持 \(store.unsupportedCount)"
+        if let statusMessage = store.statusMessage {
+            return statusMessage
+        }
+
+        return "\(store.visibleFonts.count) 个字体 · 未安装 \(store.missingCount) · 冲突 \(store.conflictCount) · 不支持 \(store.unsupportedCount)"
     }
 
     private var emptyState: some View {

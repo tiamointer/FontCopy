@@ -173,7 +173,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
     private let statusLabel = NSTextField(labelWithString: "")
     private let previewLabel = NSTextField(labelWithString: "")
     private let favoriteButton = NSButton(title: "☆", target: nil, action: nil)
-    private let compareButton = NSButton(title: "+", target: nil, action: nil)
+    private let compareButton = NSButton(title: "比较", target: nil, action: nil)
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
     private let installButton = NSButton(title: "安装", target: nil, action: nil)
 
@@ -236,9 +236,6 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
             previewLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             previewLabel.heightAnchor.constraint(equalToConstant: 78)
         ])
-
-        let click = NSClickGestureRecognizer(target: self, action: #selector(selectFont))
-        view.addGestureRecognizer(click)
     }
 
     override func prepareForReuse() {
@@ -264,9 +261,13 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         previewLabel.font = NSFont(name: font.postScriptName, size: fontSize) ?? .systemFont(ofSize: fontSize)
 
         favoriteButton.title = font.isFavorite ? "★" : "☆"
-        compareButton.title = font.isCompared ? "−" : "+"
+        favoriteButton.toolTip = font.isFavorite ? "从收藏夹移除" : "添加到收藏夹"
+        copyButton.toolTip = "复制 FCPX 富文本样式"
+        compareButton.title = font.isCompared ? "移除比较" : "加入比较"
+        compareButton.toolTip = font.isCompared ? "从比较区移除此字体" : "把此字体加入比较区"
         installButton.isEnabled = font.installStatus.isInstallable && font.isSupportedFontFile
         installButton.title = font.installStatus == .installing ? "安装中" : "安装"
+        installButton.toolTip = installToolTip(for: font)
     }
 
     @objc private func toggleFavorite() {
@@ -285,13 +286,22 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         perform(.copy)
     }
 
-    @objc private func selectFont() {
-        perform(.select)
-    }
-
     private func perform(_ action: FontPreviewAction) {
         guard let font else { return }
         actionHandler?(action, font)
+    }
+
+    private func installToolTip(for font: FontItem) -> String {
+        if font.installStatus == .installing {
+            return "正在安装此字体"
+        }
+        if font.installStatus.isInstallable && font.isSupportedFontFile {
+            return "安装此字体到 /Library/Fonts，需要管理员授权"
+        }
+        if !font.isSupportedFontFile {
+            return "此格式暂不支持系统安装"
+        }
+        return "当前状态为“\(font.installStatus.displayName)”，无需安装"
     }
 
     private func color(for status: FontInstallStatus) -> NSColor {
