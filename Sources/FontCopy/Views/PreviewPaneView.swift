@@ -1,4 +1,4 @@
-import FontPreviewerCore
+import FontCopyCore
 import SwiftUI
 
 struct PreviewPaneView: View {
@@ -92,7 +92,7 @@ struct PreviewPaneView: View {
                 Image(systemName: "textformat")
                     .font(.system(size: 54))
                     .foregroundStyle(.secondary)
-                Text("欢迎使用字体预览器")
+                Text("欢迎使用 FontCopy")
                     .font(.title2.weight(.semibold))
                 Text("点击工具栏的“导入文件夹”开始扫描本机字体资产。")
                     .foregroundStyle(.secondary)

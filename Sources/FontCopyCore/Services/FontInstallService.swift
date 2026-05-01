@@ -51,7 +51,7 @@ public struct FontInstallService: Sendable {
     private func stageFontsForPrivilegedInstall(_ fonts: [FontItem]) throws -> StagedInstallSet {
         let fileManager = FileManager.default
         let stagingDirectory = fileManager.temporaryDirectory
-            .appendingPathComponent("FontPreviewerMacInstall-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("FontCopyInstall-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
 
         var stagedFiles: [StagedInstallFile] = []

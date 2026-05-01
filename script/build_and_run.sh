@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="FontPreviewerMac"
-BUNDLE_ID="com.laike.FontPreviewerMac"
+APP_NAME="FontCopy"
+BUNDLE_ID="com.laike.FontCopy"
 MIN_SYSTEM_VERSION="14.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,8 +43,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>AppIcon</string>
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
+  <key>CFBundleDisplayName</key>
+  <string>FontCopy</string>
   <key>CFBundleName</key>
-  <string>字体预览器</string>
+  <string>FontCopy</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>

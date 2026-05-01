@@ -4,25 +4,25 @@
 import PackageDescription
 
 let package = Package(
-    name: "FontPreviewerMac",
+    name: "FontCopy",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "FontPreviewerMac", targets: ["FontPreviewerMac"]),
-        .library(name: "FontPreviewerCore", targets: ["FontPreviewerCore"])
+        .executable(name: "FontCopy", targets: ["FontCopy"]),
+        .library(name: "FontCopyCore", targets: ["FontCopyCore"])
     ],
     targets: [
         .target(
-            name: "FontPreviewerCore"
+            name: "FontCopyCore"
         ),
         .executableTarget(
-            name: "FontPreviewerMac",
-            dependencies: ["FontPreviewerCore"]
+            name: "FontCopy",
+            dependencies: ["FontCopyCore"]
         ),
         .testTarget(
-            name: "FontPreviewerMacTests",
-            dependencies: ["FontPreviewerCore"]
+            name: "FontCopyTests",
+            dependencies: ["FontCopyCore"]
         ),
     ],
     swiftLanguageModes: [.v5]

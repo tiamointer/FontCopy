@@ -1,4 +1,4 @@
-import FontPreviewerCore
+import FontCopyCore
 import SwiftUI
 
 struct SidebarView: View {

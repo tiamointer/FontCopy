@@ -1,4 +1,4 @@
-import FontPreviewerCore
+import FontCopyCore
 import Testing
 
 @Test func parsesFontFamiliesFromHTML() async throws {

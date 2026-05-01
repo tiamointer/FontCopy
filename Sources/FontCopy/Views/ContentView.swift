@@ -46,7 +46,7 @@ struct ContentView: View {
         .task {
             await store.restoreLastFolderIfAvailable()
         }
-        .alert("字体预览器", isPresented: Binding(
+        .alert("FontCopy", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
         )) {

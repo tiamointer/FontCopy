@@ -1,5 +1,5 @@
 import AppKit
-import FontPreviewerCore
+import FontCopyCore
 import Foundation
 
 @MainActor

@@ -1,6 +1,6 @@
-# FontPreviewerMac
+# FontCopy
 
-原生 macOS 字体预览器，使用 SwiftUI + AppKit/CoreText 重写。
+FontCopy 是一款原生 macOS 字体预览与富文本复制工具，使用 SwiftUI + AppKit/CoreText 构建。
 
 ## 功能
 

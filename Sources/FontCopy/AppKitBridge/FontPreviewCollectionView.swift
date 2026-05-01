@@ -1,5 +1,5 @@
 import AppKit
-import FontPreviewerCore
+import FontCopyCore
 import SwiftUI
 
 struct FontPreviewCollectionView: NSViewRepresentable {
