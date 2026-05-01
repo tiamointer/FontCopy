@@ -29,3 +29,9 @@ import Testing
     let quoted = PathUtilities.shellQuoted("/tmp/A Font's File.otf")
     #expect(quoted == "'/tmp/A Font'\\''s File.otf'")
 }
+
+@Test func categoryFromRelativePathHasNoLeadingSlash() async throws {
+    #expect(PathUtilities.category(for: "传统书法Scripts/黄令东齐伋体.ttf") == "传统书法Scripts")
+    #expect(PathUtilities.category(for: "中文/手写/字体.ttf") == "中文/手写")
+    #expect(PathUtilities.category(for: "字体.ttf") == "未分类")
+}

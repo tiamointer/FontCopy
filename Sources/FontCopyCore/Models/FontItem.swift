@@ -59,6 +59,28 @@ public struct FontItem: Identifiable, Hashable, Codable, Sendable {
         Self.supportedExtensions.contains(fileExtension)
     }
 
+    public var canNormalizeInternalName: Bool {
+        Self.nameNormalizableExtensions.contains(fileExtension) && hasMismatchedInternalName
+    }
+
+    public var hasMismatchedInternalName: Bool {
+        let expectedName = sourceURL.deletingPathExtension().lastPathComponent.normalizedFontIdentity
+        guard !expectedName.isEmpty else { return false }
+        let visibleNames = [
+            displayName.normalizedFontIdentity,
+            familyName.normalizedFontIdentity
+        ]
+        return !visibleNames.contains(expectedName)
+    }
+
     public static let supportedExtensions: Set<String> = ["ttf", "otf", "ttc", "otc"]
     public static let fontLikeExtensions: Set<String> = ["ttf", "otf", "ttc", "otc", "woff", "woff2"]
+    public static let nameNormalizableExtensions: Set<String> = ["ttf", "otf"]
+}
+
+private extension String {
+    var normalizedFontIdentity: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .widthInsensitive, .diacriticInsensitive], locale: .current)
+    }
 }

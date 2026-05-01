@@ -13,6 +13,14 @@ struct SidebarView: View {
                 controls
             }
 
+            Section("分类") {
+                ForEach(store.categories, id: \.0) { category, count in
+                    Label(category, systemImage: "folder")
+                        .badge(count)
+                        .tag(FontLibraryStore.LibraryMode.category(category))
+                }
+            }
+
             Section("工具") {
                 Menu {
                     Button {
@@ -48,14 +56,6 @@ struct SidebarView: View {
                 statusRow(.installed, count: store.installedCount)
                 statusRow(.conflict, count: store.conflictCount)
                 statusRow(.unsupported, count: store.unsupportedCount)
-            }
-
-            Section("分类") {
-                ForEach(store.categories, id: \.0) { category, count in
-                    Label(category, systemImage: "folder")
-                        .badge(count)
-                        .tag(FontLibraryStore.LibraryMode.category(category))
-                }
             }
 
             Section("字体") {
@@ -100,19 +100,37 @@ struct SidebarView: View {
     }
 
     private func statusRow(_ status: FontInstallStatus, count: Int) -> some View {
-        Label(status.displayName, systemImage: statusIcon(status))
-            .badge(count)
-            .tag(FontLibraryStore.LibraryMode.status(status))
+        HStack(spacing: 8) {
+            Image(systemName: statusIcon(status))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(statusColor(status))
+                .frame(width: 16)
+
+            Text(status.displayName)
+        }
+        .badge(count)
+        .tag(FontLibraryStore.LibraryMode.status(status))
     }
 
     private func statusIcon(_ status: FontInstallStatus) -> String {
         switch status {
-        case .installed: return "checkmark.circle"
-        case .missing: return "arrow.down.circle"
+        case .installed: return "checkmark.circle.fill"
+        case .missing: return "arrow.down.circle.fill"
         case .unsupported: return "nosign"
         case .conflict: return "exclamationmark.triangle"
         case .installing: return "clock"
         case .error: return "xmark.octagon"
+        }
+    }
+
+    private func statusColor(_ status: FontInstallStatus) -> Color {
+        switch status {
+        case .installed: return .green
+        case .missing: return .orange
+        case .unsupported: return .secondary
+        case .conflict: return .yellow
+        case .installing: return .blue
+        case .error: return .red
         }
     }
 }

@@ -353,6 +353,18 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
+    func normalizeFontName(_ font: FontItem) {
+        guard font.canNormalizeInternalName else {
+            statusMessage = "「\(font.displayName)」的文件名和内部名称已经一致，或当前格式暂不支持规范化。"
+            return
+        }
+        guard confirmFontNameNormalization(targetDescription: font.sourceURL.lastPathComponent) else { return }
+
+        Task {
+            await normalizeFontNames(scopeURL: font.sourceURL, mode: .singleFile(font.sourceURL))
+        }
+    }
+
     func copyFCPXStyle(_ font: FontItem, text selectedText: String? = nil) {
         let text = selectedText.flatMap { $0.isEmpty ? nil : $0 } ?? previewText
         pasteboard.copyRichTextForFCPX(text: text, font: font, fontSize: fontSize)

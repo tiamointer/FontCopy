@@ -31,6 +31,7 @@ struct PreviewPaneView: View {
                         onFavorite: store.toggleFavorite,
                         onCompare: store.toggleCompare,
                         onInstall: store.install,
+                        onNormalize: store.normalizeFontName,
                         onCopy: { font, selectedText in
                             store.copyFCPXStyle(font, text: selectedText)
                         },
@@ -123,6 +124,7 @@ struct PreviewPaneView: View {
                 onFavorite: store.toggleFavorite,
                 onCompare: store.toggleCompare,
                 onInstall: store.install,
+                onNormalize: store.normalizeFontName,
                 onCopy: { font, selectedText in
                     store.copyFCPXStyle(font, text: selectedText)
                 },
@@ -193,15 +195,25 @@ private struct FocusedFontDetailView: View {
                     Button {
                         store.toggleCompare(font)
                     } label: {
-                        Label(font.isCompared ? "移除比较" : "加入比较", systemImage: "plus.square.on.square")
+                        Label("比较", systemImage: "plus.square.on.square")
                     }
 
-                    Button {
-                        store.install(font)
-                    } label: {
-                        Label(font.installStatus == .installing ? "安装中" : "安装", systemImage: "arrow.down.circle")
+                    if font.canNormalizeInternalName {
+                        Button {
+                            store.normalizeFontName(font)
+                        } label: {
+                            Label("规范化", systemImage: "pencil.and.outline")
+                        }
                     }
-                    .disabled(!font.installStatus.isInstallable || !font.isSupportedFontFile || store.isInstalling)
+
+                    if font.installStatus.isInstallable && font.isSupportedFontFile {
+                        Button {
+                            store.install(font)
+                        } label: {
+                            Label(font.installStatus == .installing ? "安装中" : "安装", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(store.isInstalling)
+                    }
                 }
 
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {

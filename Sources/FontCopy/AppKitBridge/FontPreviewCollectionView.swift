@@ -9,6 +9,7 @@ struct FontPreviewCollectionView: NSViewRepresentable {
     var onFavorite: (FontItem) -> Void
     var onCompare: (FontItem) -> Void
     var onInstall: (FontItem) -> Void
+    var onNormalize: (FontItem) -> Void
     var onCopy: (FontItem, String?) -> Void
     var onSelect: (FontItem) -> Void
 
@@ -89,6 +90,8 @@ struct FontPreviewCollectionView: NSViewRepresentable {
                         self.parent.onCompare(font)
                     case .install:
                         self.parent.onInstall(font)
+                    case .normalize:
+                        self.parent.onNormalize(font)
                     case .copy(let selectedText):
                         self.parent.onCopy(font, selectedText)
                     case .select:
@@ -156,6 +159,7 @@ private enum FontPreviewAction {
     case favorite
     case compare
     case install
+    case normalize
     case copy(String?)
     case select
 }
@@ -165,11 +169,12 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let statusIconView = NSImageView()
     private let previewTextView = FontCopySelectableTextView()
     private let favoriteButton = NSButton(title: "☆", target: nil, action: nil)
     private let compareButton = NSButton(title: "比较", target: nil, action: nil)
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
+    private let normalizeButton = NSButton(title: "规范化", target: nil, action: nil)
     private let installButton = NSButton(title: "安装", target: nil, action: nil)
     private let doubleClickGesture = NSClickGestureRecognizer()
 
@@ -194,11 +199,12 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         metadataLabel.font = .systemFont(ofSize: 11)
         metadataLabel.textColor = .secondaryLabelColor
         metadataLabel.lineBreakMode = .byTruncatingTail
-        statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        statusIconView.setContentHuggingPriority(.required, for: .horizontal)
+        statusIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
         previewTextView.maximumNumberOfLines = 2
         previewTextView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        for button in [favoriteButton, compareButton, copyButton, installButton] {
+        for button in [favoriteButton, copyButton, compareButton, normalizeButton, installButton] {
             button.bezelStyle = .rounded
             button.controlSize = .small
             button.target = self
@@ -206,16 +212,16 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         favoriteButton.action = #selector(toggleFavorite)
         compareButton.action = #selector(toggleCompare)
         copyButton.action = #selector(copyStyle)
+        normalizeButton.action = #selector(normalizeFontName)
         installButton.action = #selector(installFont)
 
-        let header = NSStackView(views: [titleLabel, statusLabel])
+        let header = NSStackView(views: [titleLabel, statusIconView])
         header.orientation = .horizontal
         header.alignment = .firstBaseline
         header.spacing = 8
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
 
-        let buttons = NSStackView(views: [favoriteButton, copyButton, compareButton, installButton])
+        let buttons = NSStackView(views: [favoriteButton, copyButton, compareButton, normalizeButton, installButton])
         buttons.orientation = .horizontal
         buttons.spacing = 6
 
@@ -252,9 +258,11 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         self.actionHandler = actionHandler
 
         titleLabel.stringValue = font.displayName
-        metadataLabel.stringValue = "\(font.familyName) · \(font.relativePath)"
-        statusLabel.stringValue = font.installStatus.displayName
-        statusLabel.textColor = color(for: font.installStatus)
+        metadataLabel.stringValue = metadataText(for: font)
+        metadataLabel.isHidden = metadataLabel.stringValue.isEmpty
+        statusIconView.image = NSImage(systemSymbolName: statusSymbol(for: font.installStatus), accessibilityDescription: font.installStatus.displayName)
+        statusIconView.contentTintColor = color(for: font.installStatus)
+        statusIconView.toolTip = font.installStatus.displayName
         previewTextView.configure(
             text: previewText.isEmpty ? "输入一些内容以进行预览..." : previewText,
             postScriptName: font.postScriptName,
@@ -268,8 +276,12 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         favoriteButton.title = font.isFavorite ? "★" : "☆"
         favoriteButton.toolTip = font.isFavorite ? "从收藏夹移除" : "添加到收藏夹"
         copyButton.toolTip = "复制 FCPX 富文本样式"
-        compareButton.title = font.isCompared ? "移除比较" : "加入比较"
+        compareButton.title = "比较"
+        compareButton.state = font.isCompared ? .on : .off
         compareButton.toolTip = font.isCompared ? "从比较区移除此字体" : "把此字体加入比较区"
+        normalizeButton.isHidden = !font.canNormalizeInternalName
+        normalizeButton.toolTip = "按文件名改写字体内部名称，并创建 .bak 备份"
+        installButton.isHidden = !(font.installStatus.isInstallable && font.isSupportedFontFile)
         installButton.isEnabled = font.installStatus.isInstallable && font.isSupportedFontFile
         installButton.title = font.installStatus == .installing ? "安装中" : "安装"
         installButton.toolTip = installToolTip(for: font)
@@ -285,6 +297,10 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
 
     @objc private func installFont() {
         perform(.install)
+    }
+
+    @objc private func normalizeFontName() {
+        perform(.normalize)
     }
 
     @objc private func copyStyle() {
@@ -304,7 +320,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
             return false
         }
 
-        let actionViews = [favoriteButton, compareButton, copyButton, installButton]
+        let actionViews = [favoriteButton, compareButton, copyButton, normalizeButton, installButton]
         return !actionViews.contains { hitView == $0 || hitView.isDescendant(of: $0) }
     }
 
@@ -330,6 +346,46 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         return "当前状态为“\(font.installStatus.displayName)”，无需安装"
     }
 
+    private func metadataText(for font: FontItem) -> String {
+        var parts: [String] = []
+        if !font.familyName.isSameDisplayText(as: font.displayName) {
+            parts.append(font.familyName)
+        }
+
+        let location = locationText(for: font)
+        if !location.isEmpty {
+            parts.append(location)
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    private func locationText(for font: FontItem) -> String {
+        let cleanRelativePath = font.relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let relativeURL = URL(fileURLWithPath: cleanRelativePath)
+        let filenameStem = relativeURL.deletingPathExtension().lastPathComponent
+        let category = PathUtilities.category(for: cleanRelativePath)
+        let hasCategory = category != "未分类"
+
+        if filenameStem.isSameDisplayText(as: font.displayName)
+            || filenameStem.isSameDisplayText(as: font.familyName) {
+            return hasCategory ? category : ""
+        }
+
+        return cleanRelativePath
+    }
+
+    private func statusSymbol(for status: FontInstallStatus) -> String {
+        switch status {
+        case .installed: return "checkmark.circle.fill"
+        case .missing: return "arrow.down.circle.fill"
+        case .unsupported: return "nosign"
+        case .conflict: return "exclamationmark.triangle.fill"
+        case .installing: return "clock.fill"
+        case .error: return "xmark.octagon.fill"
+        }
+    }
+
     private func color(for status: FontInstallStatus) -> NSColor {
         switch status {
         case .installed: return .systemGreen
@@ -339,5 +395,12 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         case .installing: return .systemBlue
         case .error: return .systemRed
         }
+    }
+}
+
+private extension String {
+    func isSameDisplayText(as other: String) -> Bool {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare(other.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
     }
 }
