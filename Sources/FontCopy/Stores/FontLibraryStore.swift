@@ -44,12 +44,20 @@ final class FontLibraryStore: ObservableObject {
         didSet { defaults.set(fontSize, forKey: Keys.fontSize) }
     }
 
+    @Published var isCompatibilityModeEnabled: Bool {
+        didSet { defaults.set(isCompatibilityModeEnabled, forKey: Keys.compatibilityEnabled) }
+    }
+
+    @Published var isApplyingCompatibility = false
+    @Published var compatibilityFontCount = 0
+
     private let defaults = UserDefaults.standard
     private let scanner = FontScannerService()
     private let installer = FontInstallService()
     private let nameNormalizer = FontNameNormalizerService()
     private let pasteboard = PasteboardService()
     private let importer = FontImportService()
+    private let compatibilityService = CompatibilityFontService()
     private var favoritePostScriptNames: Set<String>
     private var comparedPostScriptNames: Set<String>
     private var lastImportedFolder: URL?
@@ -62,8 +70,12 @@ final class FontLibraryStore: ObservableObject {
         fontSize = storedSize == 0 ? 50 : storedSize
         favoritePostScriptNames = Set(defaults.stringArray(forKey: Keys.favorites) ?? [])
         comparedPostScriptNames = Set(defaults.stringArray(forKey: Keys.compared) ?? [])
+        isCompatibilityModeEnabled = defaults.bool(forKey: Keys.compatibilityEnabled)
         if let path = defaults.string(forKey: Keys.lastFolder) {
             lastImportedFolder = URL(fileURLWithPath: path)
+        }
+        if isCompatibilityModeEnabled {
+            compatibilityFontCount = compatibilityService.installedCount()
         }
     }
 
@@ -680,6 +692,64 @@ final class FontLibraryStore: ObservableObject {
         }
     }
 
+    func toggleCompatibilityMode() {
+        guard !isScanning, !isInstalling, !isNormalizingFontNames, !isApplyingCompatibility else { return }
+
+        if isCompatibilityModeEnabled {
+            isApplyingCompatibility = true
+            statusMessage = "正在清除兼容字体..."
+            let service = compatibilityService
+            Task {
+                let result = await Task.detached(priority: .userInitiated) {
+                    service.disable()
+                }.value
+                isApplyingCompatibility = false
+                if result.failed.isEmpty {
+                    compatibilityFontCount = 0
+                    isCompatibilityModeEnabled = false
+                    statusMessage = "已清除兼容字体。"
+                } else {
+                    compatibilityFontCount = result.installedCount
+                    statusMessage = "清除未完成，仍残留 \(result.installedCount) 个兼容字体。"
+                    errorMessage = "清除兼容字体失败：\(result.failed.values.first ?? "未知错误")"
+                }
+            }
+            return
+        }
+
+        guard let scanRoot = lastImportedFolder else {
+            errorMessage = "请先导入字体文件夹。"
+            return
+        }
+
+        isApplyingCompatibility = true
+        errorMessage = nil
+        statusMessage = "正在安装兼容字体..."
+        let service = compatibilityService
+        let progressBridge = CompatibilityProgressBridge { [weak self] progress in
+            self?.statusMessage = "正在安装兼容字体 \(progress.processed)/\(progress.total)..."
+        }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                service.enable(scanRoot: scanRoot, progress: progressBridge.report)
+            }.value
+            compatibilityFontCount = result.installedCount
+            isApplyingCompatibility = false
+
+            if result.installedCount == 0 && result.failed.isEmpty {
+                statusMessage = "未找到任何备份字体（.bak），无需开启兼容模式。"
+            } else {
+                isCompatibilityModeEnabled = true
+                if result.failed.isEmpty {
+                    statusMessage = "已临时安装 \(result.installedCount) 个兼容字体。"
+                } else {
+                    statusMessage = "已临时安装 \(result.installedCount) 个兼容字体，\(result.failed.count) 个失败。"
+                    errorMessage = result.failed.values.first
+                }
+            }
+        }
+    }
+
     private func installFonts(_ targetFonts: [FontItem], label: String, removingURLs: [URL] = []) async {
         let uniqueFileIDs = Set(targetFonts.map(\.fileID))
         guard !uniqueFileIDs.isEmpty else { return }
@@ -918,6 +988,7 @@ private enum Keys {
     static let favorites = "favorite-postscript-names"
     static let compared = "compared-postscript-names"
     static let lastFolder = "last-imported-folder"
+    static let compatibilityEnabled = "compatibility-mode-enabled"
 }
 
 struct PriorInstalledMatch: Sendable {
@@ -1029,6 +1100,20 @@ private final class InstallProgressBridge: @unchecked Sendable {
     }
 
     func report(_ progress: FontInstallProgress) {
+        Task { @MainActor in
+            update(progress)
+        }
+    }
+}
+
+private final class CompatibilityProgressBridge: @unchecked Sendable {
+    private let update: @MainActor (CompatibilityProgress) -> Void
+
+    init(update: @escaping @MainActor (CompatibilityProgress) -> Void) {
+        self.update = update
+    }
+
+    func report(_ progress: CompatibilityProgress) {
         Task { @MainActor in
             update(progress)
         }

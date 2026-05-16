@@ -7,6 +7,16 @@ struct SidebarView: View {
     @State private var dropTargetCategory: String?
     @State private var dropTargetAllFonts = false
 
+    private var compatibilitySubtitle: String {
+        if store.isApplyingCompatibility {
+            return store.statusMessage ?? "处理中…"
+        }
+        if store.isCompatibilityModeEnabled {
+            return "已开启 · 临时安装 \(store.compatibilityFontCount) 个备份字体"
+        }
+        return "已关闭 · 打开旧剪辑工程前开启"
+    }
+
     var body: some View {
         List(selection: Binding(
             get: { store.libraryMode },
@@ -46,6 +56,22 @@ struct SidebarView: View {
                 }
                 .disabled(store.isScanning || store.isInstalling || store.isNormalizingFontNames)
                 .help("只改写字体文件内部名称，不会安装字体")
+
+                Toggle(isOn: Binding(
+                    get: { store.isCompatibilityModeEnabled },
+                    set: { _ in store.toggleCompatibilityMode() }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label("兼容模式", systemImage: "clock.arrow.circlepath")
+                        Text(compatibilitySubtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .disabled(store.isScanning || store.isInstalling
+                          || store.isNormalizingFontNames || store.isApplyingCompatibility)
+                .help("临时把规范化前备份的原始字体装进用户字体库，方便打开旧剪辑工程；关闭即整批清除，不留双份。")
             }
 
             Section("库") {
