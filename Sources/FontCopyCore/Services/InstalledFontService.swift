@@ -52,16 +52,16 @@ public struct InstalledFontService: Sendable {
         var hashesByPostScriptName: [String: Set<String>] = [:]
         var urlsByPostScriptName: [String: Set<URL>] = [:]
 
+        // 不再对每个已安装字体预先读全文件算 SHA256（那会拖慢 ~10s）。
+        // 只收集名字与路径；冲突判定所需的 hash 由扫描端按需对少数文件计算。
         let availableURLs = (CTFontManagerCopyAvailableFontURLs() as NSArray as? [URL]) ?? []
         for url in availableURLs where isInstalledFontURL(url) {
-            guard let hash = try? FileHash.sha256Hex(for: url) else { continue }
             guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as NSArray? else { continue }
 
             let normalizedURL = Self.normalizedFileURL(url)
             for case let descriptor as CTFontDescriptor in descriptors {
                 guard let postScriptName = FontMetadataReader.stringAttribute(descriptor, key: kCTFontNameAttribute) else { continue }
                 postScriptNames.insert(postScriptName)
-                hashesByPostScriptName[postScriptName, default: []].insert(hash)
                 urlsByPostScriptName[postScriptName, default: []].insert(normalizedURL)
             }
         }

@@ -3,10 +3,12 @@ import Foundation
 public struct FontScanResult: Sendable {
     public let fonts: [FontItem]
     public let skipped: [SkippedFontFile]
+    public let cacheEntries: [String: CachedFontEntry]
 
-    public init(fonts: [FontItem], skipped: [SkippedFontFile]) {
+    public init(fonts: [FontItem], skipped: [SkippedFontFile], cacheEntries: [String: CachedFontEntry] = [:]) {
         self.fonts = fonts
         self.skipped = skipped
+        self.cacheEntries = cacheEntries
     }
 }
 

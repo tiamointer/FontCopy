@@ -55,6 +55,7 @@ final class FontLibraryStore: ObservableObject {
     private let scanner = FontScannerService()
     private let installer = FontInstallService()
     private let nameNormalizer = FontNameNormalizerService()
+    private let scanCache = FontScanCache()
     private let pasteboard = PasteboardService()
     private let importer = FontImportService()
     private let compatibilityService = CompatibilityFontService()
@@ -205,7 +206,7 @@ final class FontLibraryStore: ObservableObject {
             return
         }
         Task {
-            await scanFolder(lastImportedFolder)
+            await scanFolder(lastImportedFolder, forceFullRescan: true)
         }
     }
 
@@ -222,7 +223,7 @@ final class FontLibraryStore: ObservableObject {
         await scanFolder(lastImportedFolder, reason: "正在恢复上次字体文件夹")
     }
 
-    func scanFolder(_ url: URL, reason: String = "扫描字体中") async {
+    func scanFolder(_ url: URL, reason: String = "扫描字体中", forceFullRescan: Bool = false) async {
         isScanning = true
         errorMessage = nil
         scanProgress = FontScanProgress(processed: 0, total: 0, currentPath: nil)
@@ -242,13 +243,29 @@ final class FontLibraryStore: ObservableObject {
                 self.scanProgress = progress
                 self.statusMessage = progress.displayText
             }
+            let cached = scanCache.load(forRoot: url)
+            let cache = scanCache
+            let partialBridge = ScanPartialBridge { [weak self] partial in
+                guard let self, self.activeScanID == scanID else { return }
+                self.fonts = partial
+                self.scanProgress = nil
+                self.statusMessage = "已加载 \(partial.count) 个字体，正在核对安装状态…"
+                if self.selectedFontID == nil {
+                    self.selectedFontID = partial.first?.id
+                }
+            }
             let result = try await Task.detached(priority: .userInitiated) {
-                try scanner.scanFolder(
+                let r = try scanner.scanFolder(
                     at: url,
                     favorites: favorites,
                     compared: compared,
-                    progress: progressBridge.report
+                    cachedEntries: cached,
+                    forceFullRescan: forceFullRescan,
+                    progress: progressBridge.report,
+                    onPartial: partialBridge.report
                 )
+                cache.save(forRoot: url, entries: r.cacheEntries)
+                return r
             }.value
 
             fonts = result.fonts
@@ -1074,6 +1091,20 @@ private final class ScanProgressBridge: @unchecked Sendable {
     func report(_ progress: FontScanProgress) {
         Task { @MainActor in
             update(progress)
+        }
+    }
+}
+
+private final class ScanPartialBridge: @unchecked Sendable {
+    private let update: @MainActor ([FontItem]) -> Void
+
+    init(update: @escaping @MainActor ([FontItem]) -> Void) {
+        self.update = update
+    }
+
+    func report(_ fonts: [FontItem]) {
+        Task { @MainActor in
+            update(fonts)
         }
     }
 }
