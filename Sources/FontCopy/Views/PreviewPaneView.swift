@@ -91,6 +91,14 @@ struct PreviewPaneView: View {
             }
             .disabled(store.installableFonts.isEmpty || store.isInstalling || store.isNormalizingFontNames)
             .help("批量安装当前可见范围内的未安装字体到 /Library/Fonts，会先显示确认")
+
+            if !store.visibleConflictFonts.isEmpty {
+                Button("更新冲突 \(store.visibleConflictFonts.count)") {
+                    store.confirmAndUpdateConflicts()
+                }
+                .disabled(store.isInstalling || store.isNormalizingFontNames)
+                .help("系统里装的版本和库里不一样：比对版本号，把它们换成库里的文件，会先显示确认")
+            }
         }
     }
 
@@ -266,6 +274,15 @@ private struct FocusedFontDetailView: View {
                             store.install(font)
                         } label: {
                             Label(font.installStatus == .installing ? "安装中" : "安装", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(store.isInstalling)
+                    }
+
+                    if font.installStatus == .conflict && font.isSupportedFontFile {
+                        Button {
+                            store.confirmAndUpdateConflicts([font])
+                        } label: {
+                            Label("更新到库里的版本", systemImage: "arrow.triangle.2.circlepath")
                         }
                         .disabled(store.isInstalling)
                     }

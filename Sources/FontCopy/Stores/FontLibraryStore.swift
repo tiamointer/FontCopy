@@ -414,6 +414,85 @@ final class FontLibraryStore: ObservableObject {
         }.value
     }
 
+    var visibleConflictFonts: [FontItem] {
+        visibleFonts.filter { $0.installStatus == .conflict && $0.isSupportedFontFile }
+    }
+
+    /// Replaces installed copies that differ from the library with the library file.
+    /// Skips fonts whose installed copy is newer or cannot be removed safely.
+    func confirmAndUpdateConflicts(_ candidates: [FontItem]? = nil) {
+        let targets = (candidates ?? visibleConflictFonts).filter { $0.installStatus == .conflict }
+        guard !targets.isEmpty else {
+            statusMessage = "没有版本冲突的字体。"
+            return
+        }
+        statusMessage = "正在比对 \(targets.count) 个冲突字体的版本..."
+
+        Task {
+            let plan = await Task.detached(priority: .userInitiated) {
+                FontUpdatePlanner.plan(for: targets, snapshot: InstalledFontService().snapshot())
+            }.value
+            let updates = plan.filter(\.isUpdatable)
+            guard presentUpdateConfirmation(plan) else {
+                statusMessage = nil
+                return
+            }
+            let removalURLs = Array(Set(updates.flatMap(\.installedURLs)))
+            let fileCount = Set(updates.map { $0.font.fileID }).count
+            await installFonts(updates.map(\.font), label: "\(fileCount) 个字体文件", removingURLs: removalURLs)
+            if errorMessage == nil {
+                statusMessage = "已更新 \(fileCount) 个字体文件到库里的版本。正在使用这些字体的软件（Final Cut Pro、After Effects 等）需要重启。"
+            }
+        }
+    }
+
+    private func presentUpdateConfirmation(_ plan: [FontVersionUpdate]) -> Bool {
+        let updates = plan.filter(\.isUpdatable)
+        let skipped = plan.filter { !$0.isUpdatable }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+
+        func lines(_ items: [FontVersionUpdate], detail: (FontVersionUpdate) -> String) -> String {
+            let shown = items.prefix(8).map { "• \($0.font.displayName)  \(detail($0))" }.joined(separator: "\n")
+            return items.count > 8 ? shown + "\n…还有 \(items.count - 8) 个" : shown
+        }
+
+        var sections: [String] = []
+        if !updates.isEmpty {
+            let newer = updates.filter { $0.direction == .libraryNewer }.count
+            sections.append("""
+            将更新 \(updates.count) 个（库里版本更新 \(newer) 个，其余版本号相同或读不出、以库里为准）：
+            \(lines(updates) { $0.versionSummary })
+            """)
+        }
+        if !skipped.isEmpty {
+            sections.append("""
+            跳过 \(skipped.count) 个：
+            \(lines(skipped) { $0.blockedReason ?? "本机装的更新（\($0.versionSummary)），建议把本机这份收进字体库" })
+            """)
+        }
+
+        if updates.isEmpty {
+            alert.messageText = "这些冲突都不能自动更新"
+            alert.informativeText = sections.joined(separator: "\n\n")
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            return false
+        }
+
+        alert.messageText = "把 \(updates.count) 个字体更新到库里的版本？"
+        alert.informativeText = sections.joined(separator: "\n\n") + """
+
+
+        会删除系统里的旧文件、装入库里的文件，需要管理员授权。内部名字不变，旧工程照常能找到字体。
+        """
+        let update = alert.addButton(withTitle: "更新")
+        update.keyEquivalent = "\r"
+        let cancel = alert.addButton(withTitle: "取消")
+        cancel.keyEquivalent = "\u{1b}"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     func importDroppedFiles(_ urls: [URL], intoCategory category: String?) {
         guard !urls.isEmpty else { return }
         guard let importedRoot = lastImportedFolder else {
@@ -779,7 +858,7 @@ final class FontLibraryStore: ObservableObject {
         errorMessage = nil
         statusMessage = "正在请求管理员授权安装 \(label)..."
 
-        for index in fonts.indices where uniqueFileIDs.contains(fonts[index].fileID) && fonts[index].installStatus.isInstallable {
+        for index in fonts.indices where uniqueFileIDs.contains(fonts[index].fileID) && fonts[index].installStatus.acceptsInstall {
             fonts[index].installStatus = .installing
             fonts[index].installError = nil
         }

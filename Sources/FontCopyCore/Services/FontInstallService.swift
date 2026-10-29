@@ -31,7 +31,7 @@ public struct FontInstallService: Sendable {
             }
             return true
         }
-        let skipped = Set(fonts.filter { !$0.installStatus.isInstallable || !$0.isSupportedFontFile }.map(\.fileID))
+        let skipped = Set(fonts.filter { !$0.installStatus.acceptsInstall || !$0.isSupportedFontFile }.map(\.fileID))
         let uniqueRemovalURLs = Array(Set(removingURLs.map { $0.standardizedFileURL }))
         guard !installableFonts.isEmpty else {
             return FontInstallResult(installedFileIDs: [], skippedFileIDs: skipped, failed: rejected)
@@ -87,7 +87,7 @@ public struct FontInstallService: Sendable {
 
     /// Fonts whose fvar/STAT reference missing name records break apps like
     /// After Effects at launch once they sit in /Library/Fonts, so never install them.
-    static func nameReferenceProblem(for url: URL) -> String? {
+    public static func nameReferenceProblem(for url: URL) -> String? {
         guard let dangling = try? FontNameReferenceValidator.danglingReferences(at: url), !dangling.isEmpty else {
             return nil
         }
@@ -149,7 +149,7 @@ public struct FontInstallService: Sendable {
         var seen = Set<UUID>()
         var unique: [FontItem] = []
 
-        for font in fonts where font.installStatus.isInstallable && font.isSupportedFontFile {
+        for font in fonts where font.installStatus.acceptsInstall && font.isSupportedFontFile {
             guard !seen.contains(font.fileID) else { continue }
             seen.insert(font.fileID)
             unique.append(font)

@@ -22,4 +22,10 @@ public enum FontInstallStatus: String, Codable, CaseIterable, Sendable {
     public var isInstallable: Bool {
         self == .missing || self == .error
     }
+
+    /// Conflicts are not offered by the plain install actions, but an explicit
+    /// update replaces the installed copy with the library file.
+    public var acceptsInstall: Bool {
+        isInstallable || self == .conflict
+    }
 }

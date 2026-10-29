@@ -52,6 +52,14 @@ struct ContentView: View {
                 .help("批量安装当前可见范围内的未安装字体到 /Library/Fonts，会先显示确认")
 
                 Button {
+                    store.confirmAndUpdateConflicts()
+                } label: {
+                    Label("更新版本冲突", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(store.visibleConflictFonts.isEmpty || store.isInstalling || store.isNormalizingFontNames)
+                .help("把系统里与库不一致的字体换成库里的版本，会先显示确认")
+
+                Button {
                     store.presentClipboardInspector()
                 } label: {
                     Label("分析剪贴板", systemImage: "doc.on.clipboard")
