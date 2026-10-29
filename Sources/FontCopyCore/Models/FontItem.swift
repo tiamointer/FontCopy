@@ -16,6 +16,7 @@ public struct FontItem: Identifiable, Hashable, Codable, Sendable {
     public var isFavorite: Bool
     public var isCompared: Bool
     public var installError: String?
+    public let scriptSupport: FontScriptSupport
 
     public init(
         id: UUID = UUID(),
@@ -32,7 +33,8 @@ public struct FontItem: Identifiable, Hashable, Codable, Sendable {
         installStatus: FontInstallStatus,
         isFavorite: Bool,
         isCompared: Bool,
-        installError: String? = nil
+        installError: String? = nil,
+        scriptSupport: FontScriptSupport = []
     ) {
         self.id = id
         self.fileID = fileID
@@ -49,6 +51,7 @@ public struct FontItem: Identifiable, Hashable, Codable, Sendable {
         self.isFavorite = isFavorite
         self.isCompared = isCompared
         self.installError = installError
+        self.scriptSupport = scriptSupport
     }
 
     public var fileExtension: String {

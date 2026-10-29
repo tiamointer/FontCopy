@@ -7,6 +7,8 @@ public struct CachedFontMetadata: Codable, Sendable {
     public let styleName: String?
     public let displayName: String
     public let version: String?
+    /// 旧版缓存没有这一项，读到 nil 会当作缓存未命中重新读取。
+    public let scriptSupport: FontScriptSupport?
 }
 
 public struct CachedFontEntry: Codable, Sendable {

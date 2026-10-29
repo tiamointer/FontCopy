@@ -115,6 +115,25 @@ struct SidebarView: View {
             TextField("搜索字体...", text: $store.searchText)
                 .textFieldStyle(.roundedBorder)
 
+            Button {
+                store.isImageMatchPresented = true
+            } label: {
+                Label("以图找字", systemImage: "text.viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .disabled(store.fonts.isEmpty)
+            .help("拖入一张有字的图片，在库里找字形最接近的字体")
+
+            Picker("简繁", selection: $store.scriptFilter) {
+                ForEach(FontScriptFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("简体：隐藏只有繁体字的字体；繁体：隐藏只有简体字的字体。简繁通用的按文件名里的“简体/繁体”归类")
+
             Text("预览文本")
                 .font(.caption)
                 .foregroundStyle(.secondary)

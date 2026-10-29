@@ -7,13 +7,17 @@ public struct FontMetadata: Sendable {
     public let styleName: String?
     public let displayName: String
     public let version: String?
+    /// 实测的简繁支持（未按名字归类）；nil = 没测到。
+    public let scriptSupport: FontScriptSupport?
 
-    public init(postScriptName: String, familyName: String, styleName: String?, displayName: String, version: String?) {
+    public init(postScriptName: String, familyName: String, styleName: String?, displayName: String, version: String?,
+                scriptSupport: FontScriptSupport? = nil) {
         self.postScriptName = postScriptName
         self.familyName = familyName
         self.styleName = styleName
         self.displayName = displayName
         self.version = version
+        self.scriptSupport = scriptSupport
     }
 }
 
@@ -37,7 +41,8 @@ public enum FontMetadataReader {
                 familyName: familyName,
                 styleName: styleName,
                 displayName: displayName,
-                version: version
+                version: version,
+                scriptSupport: FontScriptSupport.measure(descriptor)
             )
         }
     }

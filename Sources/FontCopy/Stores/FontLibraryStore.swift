@@ -24,6 +24,9 @@ final class FontLibraryStore: ObservableObject {
     }
     @Published var selectedFontID: UUID?
     @Published var searchText = ""
+    @Published var scriptFilter: FontScriptFilter {
+        didSet { defaults.set(scriptFilter.rawValue, forKey: Keys.scriptFilter) }
+    }
     @Published var isScanning = false
     @Published var isInstalling = false
     @Published var isNormalizingFontNames = false
@@ -35,6 +38,7 @@ final class FontLibraryStore: ObservableObject {
     @Published var statusMessage: String?
     @Published var clipboardAnalysis: ClipboardAnalysis?
     @Published var isClipboardInspectorPresented = false
+    @Published var isImageMatchPresented = false
 
     @Published var previewText: String {
         didSet { defaults.set(previewText, forKey: Keys.previewText) }
@@ -69,6 +73,7 @@ final class FontLibraryStore: ObservableObject {
         previewText = defaults.string(forKey: Keys.previewText) ?? "一石二鸟 2 birds 1 stone"
         let storedSize = defaults.double(forKey: Keys.fontSize)
         fontSize = storedSize == 0 ? 50 : storedSize
+        scriptFilter = defaults.string(forKey: Keys.scriptFilter).flatMap(FontScriptFilter.init(rawValue:)) ?? .all
         favoritePostScriptNames = Set(defaults.stringArray(forKey: Keys.favorites) ?? [])
         comparedPostScriptNames = Set(defaults.stringArray(forKey: Keys.compared) ?? [])
         isCompatibilityModeEnabled = defaults.bool(forKey: Keys.compatibilityEnabled)
@@ -133,7 +138,7 @@ final class FontLibraryStore: ObservableObject {
     }
 
     var categories: [(String, Int)] {
-        let grouped = Dictionary(grouping: filteredBySearch(fonts), by: \.category)
+        let grouped = Dictionary(grouping: filteredBySearch(filteredByScript(fonts)), by: \.category)
         return grouped
             .map { ($0.key, $0.value.count) }
             .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
@@ -153,7 +158,7 @@ final class FontLibraryStore: ObservableObject {
         case .selectedFont(let id):
             source = fonts.filter { $0.id == id }
         }
-        return filteredBySearch(source)
+        return filteredBySearch(filteredByScript(source))
     }
 
     var detailTitle: String {
@@ -953,10 +958,11 @@ final class FontLibraryStore: ObservableObject {
         case .status(let status): baseScope = "状态 “\(status.displayName)”"
         case .selectedFont: baseScope = "当前选中字体"
         }
+        let scope = scriptFilter == .all ? baseScope : "\(baseScope) · \(scriptFilter.displayName)"
         if trimmedSearch.isEmpty {
-            return baseScope
+            return scope
         }
-        return "\(baseScope) · 搜索 “\(trimmedSearch)”"
+        return "\(scope) · 搜索 “\(trimmedSearch)”"
     }
 
     private func shouldRescanAfterNormalization(scopeURL: URL) -> Bool {
@@ -967,6 +973,11 @@ final class FontLibraryStore: ObservableObject {
         if scopePath.hasPrefix(libraryPath + "/") { return true }
         if libraryPath.hasPrefix(scopePath + "/") { return true }
         return false
+    }
+
+    private func filteredByScript(_ source: [FontItem]) -> [FontItem] {
+        guard scriptFilter != .all else { return source }
+        return source.filter { $0.scriptSupport.isVisible(in: scriptFilter) }
     }
 
     private func filteredBySearch(_ source: [FontItem]) -> [FontItem] {
@@ -1006,6 +1017,7 @@ private enum Keys {
     static let compared = "compared-postscript-names"
     static let lastFolder = "last-imported-folder"
     static let compatibilityEnabled = "compatibility-mode-enabled"
+    static let scriptFilter = "script-filter"
 }
 
 struct PriorInstalledMatch: Sendable {

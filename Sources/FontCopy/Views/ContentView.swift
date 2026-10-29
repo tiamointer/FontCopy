@@ -62,6 +62,10 @@ struct ContentView: View {
             ClipboardInspectorView(store: store)
                 .frame(width: 760, height: 620)
         }
+        .sheet(isPresented: $store.isImageMatchPresented) {
+            ImageFontMatchView(store: store)
+                .frame(minWidth: 1040, idealWidth: 1120, minHeight: 700, idealHeight: 760)
+        }
         .task {
             await store.restoreLastFolderIfAvailable()
         }

@@ -70,10 +70,12 @@ public struct FontScannerService: Sendable {
                    let cached = cachedEntries[file.relativePath],
                    cached.fileSize == file.fileSize,
                    cached.modifiedAt == file.modifiedAt,
-                   !cached.isUnsupported {
+                   !cached.isUnsupported,
+                   cached.metadata.allSatisfy({ $0.scriptSupport != nil }) {
                     let meta = cached.metadata.map {
                         FontMetadata(postScriptName: $0.postScriptName, familyName: $0.familyName,
-                                     styleName: $0.styleName, displayName: $0.displayName, version: $0.version)
+                                     styleName: $0.styleName, displayName: $0.displayName, version: $0.version,
+                                     scriptSupport: $0.scriptSupport)
                     }
                     acc.lock.lock(); acc.fonts.append((file, meta, cached.fileHash)); acc.lock.unlock()
                     return
@@ -103,7 +105,8 @@ public struct FontScannerService: Sendable {
                         styleName: m.styleName, version: m.version, fileHash: "",
                         category: file.category,
                         installStatus: file.isSupported ? .missing : .unsupported,
-                        isFavorite: favorites.contains(m.postScriptName), isCompared: compared.contains(m.postScriptName)
+                        isFavorite: favorites.contains(m.postScriptName), isCompared: compared.contains(m.postScriptName),
+                        scriptSupport: scriptSupport(file, m)
                     ))
                 }
             }
@@ -132,7 +135,7 @@ public struct FontScannerService: Sendable {
                 cacheOut[file.relativePath] = CachedFontEntry(
                     relativePath: file.relativePath, fileSize: file.fileSize, modifiedAt: file.modifiedAt,
                     fileHash: "", isUnsupported: true,
-                    metadata: meta.map { CachedFontMetadata(postScriptName: $0.postScriptName, familyName: $0.familyName, styleName: $0.styleName, displayName: $0.displayName, version: $0.version) }
+                    metadata: meta.map { CachedFontMetadata(postScriptName: $0.postScriptName, familyName: $0.familyName, styleName: $0.styleName, displayName: $0.displayName, version: $0.version, scriptSupport: $0.scriptSupport ?? []) }
                 )
                 continue
             }
@@ -158,13 +161,14 @@ public struct FontScannerService: Sendable {
                     displayName: m.displayName, postScriptName: m.postScriptName, familyName: m.familyName,
                     styleName: m.styleName, version: m.version, fileHash: hash,
                     category: file.category, installStatus: status,
-                    isFavorite: favorites.contains(m.postScriptName), isCompared: compared.contains(m.postScriptName)
+                    isFavorite: favorites.contains(m.postScriptName), isCompared: compared.contains(m.postScriptName),
+                    scriptSupport: scriptSupport(file, m)
                 ))
             }
             cacheOut[file.relativePath] = CachedFontEntry(
                 relativePath: file.relativePath, fileSize: file.fileSize, modifiedAt: file.modifiedAt,
                 fileHash: hash, isUnsupported: false,
-                metadata: meta.map { CachedFontMetadata(postScriptName: $0.postScriptName, familyName: $0.familyName, styleName: $0.styleName, displayName: $0.displayName, version: $0.version) }
+                metadata: meta.map { CachedFontMetadata(postScriptName: $0.postScriptName, familyName: $0.familyName, styleName: $0.styleName, displayName: $0.displayName, version: $0.version, scriptSupport: $0.scriptSupport ?? []) }
             )
         }
 
@@ -205,6 +209,13 @@ public struct FontScannerService: Sendable {
             ))
         }
         return entries
+    }
+
+    private func scriptSupport(_ file: FileEntry, _ meta: FontMetadata) -> FontScriptSupport {
+        FontScriptSupport.resolve(
+            measured: meta.scriptSupport ?? [],
+            names: [file.url.deletingPathExtension().lastPathComponent, meta.familyName]
+        )
     }
 
     private func registerForProcessPreview(_ url: URL) {
