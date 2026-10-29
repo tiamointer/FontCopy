@@ -23,11 +23,18 @@ public struct FontInstallService: Sendable {
         removingURLs: [URL] = [],
         progress: ((FontInstallProgress) -> Void)? = nil
     ) -> FontInstallResult {
-        let installableFonts = uniqueInstallableFiles(from: fonts)
+        var rejected: [UUID: String] = [:]
+        let installableFonts = uniqueInstallableFiles(from: fonts).filter { font in
+            if let reason = Self.nameReferenceProblem(for: font.sourceURL) {
+                rejected[font.fileID] = reason
+                return false
+            }
+            return true
+        }
         let skipped = Set(fonts.filter { !$0.installStatus.isInstallable || !$0.isSupportedFontFile }.map(\.fileID))
         let uniqueRemovalURLs = Array(Set(removingURLs.map { $0.standardizedFileURL }))
         guard !installableFonts.isEmpty else {
-            return FontInstallResult(installedFileIDs: [], skippedFileIDs: skipped, failed: [:])
+            return FontInstallResult(installedFileIDs: [], skippedFileIDs: skipped, failed: rejected)
         }
 
         do {
@@ -68,13 +75,23 @@ public struct FontInstallService: Sendable {
             return FontInstallResult(
                 installedFileIDs: Set(installableFonts.map(\.fileID)),
                 skippedFileIDs: skipped,
-                failed: [:],
+                failed: rejected,
                 removedURLs: uniqueRemovalURLs
             )
         } catch {
             let failed = Dictionary(uniqueKeysWithValues: installableFonts.map { ($0.fileID, error.localizedDescription) })
+                .merging(rejected) { current, _ in current }
             return FontInstallResult(installedFileIDs: [], skippedFileIDs: skipped, failed: failed)
         }
+    }
+
+    /// Fonts whose fvar/STAT reference missing name records break apps like
+    /// After Effects at launch once they sit in /Library/Fonts, so never install them.
+    static func nameReferenceProblem(for url: URL) -> String? {
+        guard let dangling = try? FontNameReferenceValidator.danglingReferences(at: url), !dangling.isEmpty else {
+            return nil
+        }
+        return FontNameReferenceValidator.describe(dangling)
     }
 
     private func stageFontsForPrivilegedInstall(

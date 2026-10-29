@@ -115,6 +115,7 @@ public struct FontNameNormalizerService: Sendable {
                 recordedPostScriptName = postScriptPrefix
             }
 
+            try validateNameReferences(rewrittenData, originalData: originalData)
             try validateFontData(rewrittenData, originalURL: url)
             let backupURL = try createBackup(for: url)
             try rewrittenData.write(to: url, options: .atomic)
@@ -232,6 +233,18 @@ public struct FontNameNormalizerService: Sendable {
         }
     }
 
+    /// Refuses output whose fvar/STAT point at name records that are not there.
+    private func validateNameReferences(_ data: Data, originalData: Data) throws {
+        let dangling = try FontNameReferenceValidator.danglingReferences(in: data)
+        guard !dangling.isEmpty else { return }
+        let originalDangling = (try? FontNameReferenceValidator.danglingReferences(in: originalData)) ?? []
+        let introduced = dangling.filter { !originalDangling.contains($0) }
+        throw FontNameNormalizationError.danglingNameReferences(
+            nameIDs: dangling.map(\.nameID),
+            introducedByRewrite: !introduced.isEmpty
+        )
+    }
+
     private func createBackup(for url: URL) throws -> URL {
         let backupURL = uniqueBackupURL(for: url)
         try FileManager.default.copyItem(at: url, to: backupURL)
@@ -313,6 +326,7 @@ public enum FontNameNormalizationError: LocalizedError, Sendable {
     case invalidTable(String)
     case validationFailed
     case stringEncodingFailed
+    case danglingNameReferences(nameIDs: [UInt16], introducedByRewrite: Bool)
 
     public var errorDescription: String? {
         switch self {
@@ -328,6 +342,11 @@ public enum FontNameNormalizationError: LocalizedError, Sendable {
             return "改名后的字体未通过 CoreText 校验"
         case .stringEncodingFailed:
             return "字体名称编码失败"
+        case .danglingNameReferences(let nameIDs, let introducedByRewrite):
+            let list = nameIDs.map(String.init).joined(separator: ", ")
+            return introducedByRewrite
+                ? "改名后 fvar/STAT 引用的名称记录丢失（nameID \(list)），已拒绝写入"
+                : "原字体的 fvar/STAT 引用了不存在的名称记录（nameID \(list)），安装会导致 After Effects 等软件报错，已拒绝处理"
         }
     }
 }
@@ -666,6 +685,8 @@ private struct NameTable {
 
     let format: UInt16
     let records: [Record]
+    /// Format 1 language-tag strings; languageIDs >= 0x8000 index into these.
+    let languageTags: [Data]
 
     init(data: Data) throws {
         guard data.count >= 6 else { throw FontNameNormalizationError.invalidTable("name") }
@@ -699,6 +720,20 @@ private struct NameTable {
             ))
         }
         records = parsedRecords
+
+        var parsedTags: [Data] = []
+        if format == 1 {
+            let tagCountOffset = 6 + count * 12
+            let tagCount = Int(try data.readUInt16(at: tagCountOffset))
+            for index in 0..<tagCount {
+                let offset = tagCountOffset + 2 + index * 4
+                let length = Int(try data.readUInt16(at: offset))
+                let start = stringOffset + Int(try data.readUInt16(at: offset + 2))
+                guard start + length <= data.count else { throw FontNameNormalizationError.invalidTable("name") }
+                parsedTags.append(data.subdata(in: start..<start + length))
+            }
+        }
+        languageTags = parsedTags
     }
 
     func rewritten(visibleName: String, postScriptName: String) throws -> Data {
@@ -732,20 +767,27 @@ private struct NameTable {
 
         let sortedKeys = outputRecords.keys.sorted()
         var stringStorage = Data()
-        var encodedRecords: [(key: RecordKey, length: UInt16, offset: UInt16)] = []
-        for key in sortedKeys {
-            guard let rawString = outputRecords[key] else { continue }
+        func store(_ rawString: Data) throws -> (length: UInt16, offset: UInt16) {
             guard rawString.count <= UInt16.max, stringStorage.count <= UInt16.max else {
                 throw FontNameNormalizationError.invalidTable("name")
             }
-            encodedRecords.append((key: key, length: UInt16(rawString.count), offset: UInt16(stringStorage.count)))
-            stringStorage.append(rawString)
+            defer { stringStorage.append(rawString) }
+            return (UInt16(rawString.count), UInt16(stringStorage.count))
         }
+        var encodedRecords: [(key: RecordKey, length: UInt16, offset: UInt16)] = []
+        for key in sortedKeys {
+            guard let rawString = outputRecords[key] else { continue }
+            let stored = try store(rawString)
+            encodedRecords.append((key: key, length: stored.length, offset: stored.offset))
+        }
+        let encodedTags = try languageTags.map { try store($0) }
 
+        let outputFormat: UInt16 = encodedTags.isEmpty ? 0 : 1
+        let headerSize = 6 + encodedRecords.count * 12 + (outputFormat == 1 ? 2 + encodedTags.count * 4 : 0)
         var output = Data()
-        output.appendUInt16(0)
+        output.appendUInt16(outputFormat)
         output.appendUInt16(UInt16(encodedRecords.count))
-        output.appendUInt16(UInt16(6 + encodedRecords.count * 12))
+        output.appendUInt16(UInt16(headerSize))
         for record in encodedRecords {
             output.appendUInt16(record.key.platformID)
             output.appendUInt16(record.key.encodingID)
@@ -753,6 +795,13 @@ private struct NameTable {
             output.appendUInt16(record.key.nameID)
             output.appendUInt16(record.length)
             output.appendUInt16(record.offset)
+        }
+        if outputFormat == 1 {
+            output.appendUInt16(UInt16(encodedTags.count))
+            for tag in encodedTags {
+                output.appendUInt16(tag.length)
+                output.appendUInt16(tag.offset)
+            }
         }
         output.append(stringStorage)
         return output

@@ -62,6 +62,10 @@ public struct CompatibilityFontService: Sendable {
             let restoredName = restoredFileName(for: backup)
             let targetName = uniqueName(restoredName, source: backup, used: &usedNames)
             let destination = compatDirectory.appendingPathComponent(targetName)
+            if let problem = FontInstallService.nameReferenceProblem(for: backup) {
+                failed[backup.path] = problem
+                continue
+            }
             do {
                 if fileManager.fileExists(atPath: destination.path) {
                     try fileManager.removeItem(at: destination)
