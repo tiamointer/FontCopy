@@ -266,6 +266,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         previewTextView.configure(
             text: previewText.isEmpty ? "输入一些内容以进行预览..." : previewText,
             postScriptName: font.postScriptName,
+            sourceURL: font.sourceURL,
             fontSize: CGFloat(fontSize),
             alignment: .left
         )

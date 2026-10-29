@@ -4,6 +4,7 @@ import SwiftUI
 struct SelectableFontPreviewText: NSViewRepresentable {
     var text: String
     var postScriptName: String
+    var sourceURL: URL
     var fontSize: CGFloat
     var alignment: NSTextAlignment = .left
     var onCopySelection: (String) -> Void
@@ -19,6 +20,7 @@ struct SelectableFontPreviewText: NSViewRepresentable {
         nsView.configure(
             text: text,
             postScriptName: postScriptName,
+            sourceURL: sourceURL,
             fontSize: fontSize,
             alignment: alignment
         )
@@ -80,10 +82,11 @@ final class FontCopySelectableTextView: NSTextView {
     func configure(
         text: String,
         postScriptName: String,
+        sourceURL: URL,
         fontSize: CGFloat,
         alignment: NSTextAlignment
     ) {
-        let font = NSFont(name: postScriptName, size: fontSize) ?? .systemFont(ofSize: fontSize)
+        let font = PreviewFontLoader.font(postScriptName: postScriptName, sourceURL: sourceURL, size: fontSize)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
         paragraph.lineBreakMode = .byWordWrapping
@@ -119,5 +122,25 @@ final class FontCopySelectableTextView: NSTextView {
         }
 
         copySelectedText?(String(string[swiftRange]))
+    }
+}
+
+/// 预览用字体。扫描命中缓存时不会再注册字体文件，未安装的字体按名字找不到，
+/// 这里第一次用到时才把文件注册到本进程（不会安装进系统）。
+@MainActor
+enum PreviewFontLoader {
+    private static var registeredURLs: Set<URL> = []
+
+    static func font(postScriptName: String, sourceURL: URL, size: CGFloat) -> NSFont {
+        if let font = NSFont(name: postScriptName, size: size) {
+            return font
+        }
+        if registeredURLs.insert(sourceURL).inserted {
+            CTFontManagerRegisterFontsForURL(sourceURL as CFURL, .process, nil)
+            if let font = NSFont(name: postScriptName, size: size) {
+                return font
+            }
+        }
+        return .systemFont(ofSize: size)
     }
 }

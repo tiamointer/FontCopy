@@ -222,6 +222,7 @@ private struct FocusedFontDetailView: View {
                 SelectableFontPreviewText(
                     text: previewText,
                     postScriptName: font.postScriptName,
+                    sourceURL: font.sourceURL,
                     fontSize: CGFloat(focusedFontSize),
                     alignment: .center,
                     onCopySelection: { selectedText in
