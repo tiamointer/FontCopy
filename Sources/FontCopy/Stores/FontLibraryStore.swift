@@ -27,6 +27,9 @@ final class FontLibraryStore: ObservableObject {
     @Published var scriptFilter: FontScriptFilter {
         didSet { defaults.set(scriptFilter.rawValue, forKey: Keys.scriptFilter) }
     }
+    @Published var groupsFamilies: Bool {
+        didSet { defaults.set(groupsFamilies, forKey: Keys.groupsFamilies) }
+    }
     @Published var isScanning = false
     @Published var isInstalling = false
     @Published var isNormalizingFontNames = false
@@ -74,6 +77,7 @@ final class FontLibraryStore: ObservableObject {
         let storedSize = defaults.double(forKey: Keys.fontSize)
         fontSize = storedSize == 0 ? 50 : storedSize
         scriptFilter = defaults.string(forKey: Keys.scriptFilter).flatMap(FontScriptFilter.init(rawValue:)) ?? .all
+        groupsFamilies = defaults.object(forKey: Keys.groupsFamilies) as? Bool ?? true
         favoritePostScriptNames = Set(defaults.stringArray(forKey: Keys.favorites) ?? [])
         comparedPostScriptNames = Set(defaults.stringArray(forKey: Keys.compared) ?? [])
         isCompatibilityModeEnabled = defaults.bool(forKey: Keys.compatibilityEnabled)
@@ -159,6 +163,12 @@ final class FontLibraryStore: ObservableObject {
             source = fonts.filter { $0.id == id }
         }
         return filteredBySearch(filteredByScript(source))
+    }
+
+    /// Cards for the grid: one per family when folding weights, else one per font.
+    var visibleGroups: [FontFamilyGroup] {
+        let fonts = visibleFonts
+        return groupsFamilies ? FontFamilyGrouping.group(fonts) : fonts.map(FontFamilyGroup.single)
     }
 
     var detailTitle: String {
@@ -1090,6 +1100,7 @@ final class FontLibraryStore: ObservableObject {
 }
 
 private enum Keys {
+    static let groupsFamilies = "groups-families"
     static let previewText = "preview-text"
     static let fontSize = "font-size"
     static let favorites = "favorite-postscript-names"

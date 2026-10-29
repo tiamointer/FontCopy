@@ -41,7 +41,7 @@ struct PreviewPaneView: View {
                     }
 
                     FontPreviewCollectionView(
-                        items: store.visibleFonts,
+                        items: store.visibleGroups,
                         previewText: store.previewText,
                         fontSize: store.fontSize,
                         onFavorite: store.toggleFavorite,
@@ -74,6 +74,12 @@ struct PreviewPaneView: View {
                 ProgressView()
                     .controlSize(.small)
             }
+
+            Toggle(isOn: $store.groupsFamilies) {
+                Label("合并字重", systemImage: "square.stack")
+            }
+            .toggleStyle(.button)
+            .help("同一家族的不同字重合成一张卡，在卡片上切换字重")
 
             Button("清除比较") {
                 store.clearComparison()
@@ -139,7 +145,12 @@ struct PreviewPaneView: View {
     }
 
     private var staticCountsText: String {
-        "\(store.visibleFonts.count) 个字体 · 未安装 \(store.visibleMissingCount) · 冲突 \(store.visibleConflictCount) · 不支持 \(store.visibleUnsupportedCount)"
+        "\(familyCountText)\(store.visibleFonts.count) 个字体 · 未安装 \(store.visibleMissingCount) · 冲突 \(store.visibleConflictCount) · 不支持 \(store.visibleUnsupportedCount)"
+    }
+
+    private var familyCountText: String {
+        guard store.groupsFamilies else { return "" }
+        return "\(store.visibleGroups.count) 个家族 · "
     }
 
     private var emptyState: some View {
@@ -180,7 +191,7 @@ struct PreviewPaneView: View {
             .padding(.top, 12)
 
             FontPreviewCollectionView(
-                items: store.comparedFonts,
+                items: store.comparedFonts.map(FontFamilyGroup.single),
                 previewText: store.previewText,
                 fontSize: min(store.fontSize, 72),
                 onFavorite: store.toggleFavorite,

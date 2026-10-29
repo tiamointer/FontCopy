@@ -3,7 +3,7 @@ import FontCopyCore
 import SwiftUI
 
 struct FontPreviewCollectionView: NSViewRepresentable {
-    var items: [FontItem]
+    var items: [FontFamilyGroup]
     var previewText: String
     var fontSize: Double
     var onFavorite: (FontItem) -> Void
@@ -54,6 +54,8 @@ struct FontPreviewCollectionView: NSViewRepresentable {
     final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout {
         var parent: FontPreviewCollectionView
         weak var collectionView: NSCollectionView?
+        /// Weight the user picked on each family card, kept across reloads.
+        var chosenMembers: [String: UUID] = [:]
 
         init(parent: FontPreviewCollectionView) {
             self.parent = parent
@@ -76,11 +78,16 @@ struct FontPreviewCollectionView: NSViewRepresentable {
                 return item
             }
 
-            let font = parent.items[indexPath.item]
+            let group = parent.items[indexPath.item]
+            let chosenIndex = chosenMembers[group.id].flatMap { id in group.members.firstIndex { $0.id == id } }
             previewItem.configure(
-                font: font,
+                group: group,
+                memberIndex: chosenIndex ?? group.representativeIndex,
                 previewText: parent.previewText,
                 fontSize: parent.fontSize,
+                onChooseWeight: { [weak self] font in
+                    self?.chosenMembers[group.id] = font.id
+                },
                 actionHandler: { [weak self] action, font in
                     guard let self else { return }
                     switch action {
@@ -176,10 +183,15 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
     private let normalizeButton = NSButton(title: "规范化", target: nil, action: nil)
     private let installButton = NSButton(title: "安装", target: nil, action: nil)
+    private let weightPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let doubleClickGesture = NSClickGestureRecognizer()
 
+    private var group: FontFamilyGroup?
     private var font: FontItem?
+    private var previewText = ""
+    private var fontSize: Double = 0
     private var actionHandler: ((FontPreviewAction, FontItem) -> Void)?
+    private var onChooseWeight: ((FontItem) -> Void)?
 
     override func loadView() {
         view = NSView()
@@ -214,8 +226,13 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         copyButton.action = #selector(copyStyle)
         normalizeButton.action = #selector(normalizeFontName)
         installButton.action = #selector(installFont)
+        weightPopup.controlSize = .small
+        weightPopup.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        weightPopup.target = self
+        weightPopup.action = #selector(chooseWeight)
+        weightPopup.toolTip = "切换这个家族的字重"
 
-        let header = NSStackView(views: [titleLabel, statusIconView])
+        let header = NSStackView(views: [titleLabel, weightPopup, statusIconView])
         header.orientation = .horizontal
         header.alignment = .firstBaseline
         header.spacing = 8
@@ -244,21 +261,44 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        group = nil
         font = nil
         actionHandler = nil
+        onChooseWeight = nil
     }
 
     func configure(
-        font: FontItem,
+        group: FontFamilyGroup,
+        memberIndex: Int,
         previewText: String,
         fontSize: Double,
+        onChooseWeight: @escaping (FontItem) -> Void,
         actionHandler: @escaping (FontPreviewAction, FontItem) -> Void
     ) {
-        self.font = font
+        self.group = group
+        self.previewText = previewText
+        self.fontSize = fontSize
+        self.onChooseWeight = onChooseWeight
         self.actionHandler = actionHandler
 
-        titleLabel.stringValue = font.displayName
-        metadataLabel.stringValue = metadataText(for: font)
+        weightPopup.isHidden = !group.isFamily
+        if group.isFamily {
+            weightPopup.removeAllItems()
+            weightPopup.addItems(withTitles: group.weightNames.enumerated().map { index, name in
+                name.isEmpty ? group.members[index].displayName : name
+            })
+            weightPopup.selectItem(at: memberIndex)
+        }
+        show(group.members[memberIndex])
+    }
+
+    private func show(_ font: FontItem) {
+        guard let group else { return }
+        self.font = font
+
+        titleLabel.stringValue = group.isFamily ? group.name : font.displayName
+        titleLabel.toolTip = font.displayName
+        metadataLabel.stringValue = metadataText(for: font, in: group)
         metadataLabel.isHidden = metadataLabel.stringValue.isEmpty
         statusIconView.image = NSImage(systemSymbolName: statusSymbol(for: font.installStatus), accessibilityDescription: font.installStatus.displayName)
         statusIconView.contentTintColor = color(for: font.installStatus)
@@ -286,6 +326,13 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         installButton.isEnabled = font.installStatus.isInstallable && font.isSupportedFontFile
         installButton.title = font.installStatus == .installing ? "安装中" : "安装"
         installButton.toolTip = installToolTip(for: font)
+    }
+
+    @objc private func chooseWeight() {
+        guard let group, group.members.indices.contains(weightPopup.indexOfSelectedItem) else { return }
+        let font = group.members[weightPopup.indexOfSelectedItem]
+        onChooseWeight?(font)
+        show(font)
     }
 
     @objc private func toggleFavorite() {
@@ -321,7 +368,7 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
             return false
         }
 
-        let actionViews = [favoriteButton, compareButton, copyButton, normalizeButton, installButton]
+        let actionViews = [favoriteButton, compareButton, copyButton, normalizeButton, installButton, weightPopup]
         return !actionViews.contains { hitView == $0 || hitView.isDescendant(of: $0) }
     }
 
@@ -347,7 +394,11 @@ private final class FontPreviewCollectionItem: NSCollectionViewItem {
         return "当前状态为“\(font.installStatus.displayName)”，无需安装"
     }
 
-    private func metadataText(for font: FontItem) -> String {
+    private func metadataText(for font: FontItem, in group: FontFamilyGroup) -> String {
+        if group.isFamily {
+            let installed = group.members.filter { $0.installStatus == .installed }.count
+            return "\(group.members.count) 个字重 · 已安装 \(installed)"
+        }
         var parts: [String] = []
         if !font.familyName.isSubsumedBy(font.displayName) {
             parts.append(font.familyName)
