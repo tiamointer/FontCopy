@@ -10,6 +10,15 @@ struct ImageFontMatchView: View {
 
     @State private var image: NSImage?
     @State private var cgImage: CGImage?
+    /// 整张图认出的每一行；不止一行时要先选范围。
+    @State private var lines: [RecognizedLine] = []
+    /// 选中的范围，整张图的归一化坐标（原点左下）。nil 表示用整张图。
+    @State private var selection: CGRect?
+    @State private var dragRect: CGRect?
+    /// 实际认字、比对用的图：选了范围就是切下来的那块。
+    /// recognized / splitBoxes 都是这张图里的坐标。
+    @State private var workingImage: CGImage?
+    @State private var recognitionID = UUID()
     @State private var recognized: [RecognizedCharacter] = []
     @State private var splitBoxes: [CGRect] = []
     @State private var text = ""
@@ -24,6 +33,11 @@ struct ImageFontMatchView: View {
 
     private var typedCharacters: [Character] {
         Array(text.filter { !$0.isWhitespace })
+    }
+
+    /// 海报这类图里有好几处字：先圈出要找的那几个字，再认字比对。
+    private var needsSelection: Bool {
+        lines.count > 1 && selection == nil
     }
 
     private var usesRecognizedBoxes: Bool {
@@ -104,6 +118,7 @@ struct ImageFontMatchView: View {
             VStack(alignment: .leading, spacing: 20) {
                 step(1, "放入图片") {
                     dropZone
+                    selectionHint
                 }
 
                 step(2, "确认图里的字") {
@@ -145,7 +160,7 @@ struct ImageFontMatchView: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
-                    .overlay { boxOverlay }
+                    .overlay { selectionOverlay }
                     .padding(10)
             } else {
                 VStack(spacing: 8) {
@@ -160,43 +175,174 @@ struct ImageFontMatchView: View {
                 }
             }
         }
-        .frame(height: 200)
+        .frame(height: dropZoneHeight)
         .onDrop(of: [.fileURL, .image], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
         }
     }
 
-    private var boxOverlay: some View {
-        GeometryReader { geometry in
-            ForEach(Array(pairs.enumerated()), id: \.offset) { index, item in
-                let rect = CGRect(
-                    x: item.box.minX * geometry.size.width,
-                    y: (1 - item.box.maxY) * geometry.size.height,
-                    width: item.box.width * geometry.size.width,
-                    height: item.box.height * geometry.size.height
+    /// 有图后按比例放高，海报也能看清再框。
+    private var dropZoneHeight: CGFloat {
+        guard let image, image.size.width > 0 else { return 200 }
+        return min(460, max(160, 340 * image.size.height / image.size.width + 20))
+    }
+
+    @ViewBuilder
+    private var selectionHint: some View {
+        if image != nil, !isRecognizing || selection != nil, lines.count > 1 || selection != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(
+                    selection == nil
+                        ? "图里有 \(lines.count) 处字。点一行选中它，或拖框圈出要找的字；按住 ⇧ 加选"
+                        : "只在框里找。点别的行或重新拖框可以换",
+                    systemImage: "crop"
                 )
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(Color.accentColor, lineWidth: 1.5)
-                    .frame(width: rect.width, height: rect.height)
-                    .overlay(alignment: .topLeading) {
-                        Text("\(index + 1)")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 3)
-                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 2))
-                            .offset(x: -1, y: -12)
-                    }
-                    .position(x: rect.midX, y: rect.midY)
+                .font(.caption)
+                .foregroundStyle(selection == nil ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if selection != nil {
+                    Button("用整张图") { useWholeImage() }
+                        .controlSize(.small)
+                }
             }
         }
     }
 
+    private var selectionOverlay: some View {
+        GeometryReader { geometry in
+            let size = geometry.size
+            ZStack {
+                if lines.count > 1 {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        let rect = viewRect(line.box, in: size)
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor.opacity(needsSelection ? 0.1 : 0))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 2)
+                                    .stroke(Color.accentColor.opacity(needsSelection ? 0.6 : 0.25),
+                                            style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                            )
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                    }
+                }
+
+                if let selection {
+                    let rect = viewRect(selection, in: size)
+                    // 框外压暗
+                    Path { path in
+                        path.addRect(CGRect(origin: .zero, size: size))
+                        path.addRect(rect)
+                    }
+                    .fill(Color.black.opacity(0.35), style: FillStyle(eoFill: true))
+                    Rectangle()
+                        .stroke(Color.white, lineWidth: 1.5)
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+
+                characterBoxes(in: size)
+
+                if let dragRect {
+                    let rect = viewRect(dragRect, in: size)
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.1))
+                        .overlay(Rectangle().stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3])))
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .contentShape(Rectangle())
+            .gesture(selectionGesture(in: size))
+        }
+    }
+
+    private func characterBoxes(in size: CGSize) -> some View {
+        ForEach(Array(pairs.enumerated()), id: \.offset) { index, item in
+            let rect = viewRect(fullBox(item.box), in: size)
+            RoundedRectangle(cornerRadius: 2)
+                .stroke(Color.accentColor, lineWidth: 1.5)
+                .frame(width: rect.width, height: rect.height)
+                .overlay(alignment: .topLeading) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 2))
+                        .offset(x: -1, y: -12)
+                }
+                .position(x: rect.midX, y: rect.midY)
+        }
+    }
+
+    /// 点一下 = 选中那一行；拖 = 自己圈范围；按住 ⇧ 和已选的合并。
+    private func selectionGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard hypot(value.translation.width, value.translation.height) > 4 else { return }
+                dragRect = normalizedRect(from: value.startLocation, to: value.location, in: size)
+            }
+            .onEnded { value in
+                let picked = dragRect ?? lineBox(at: value.location, in: size)
+                dragRect = nil
+                guard let picked else { return }
+                let extend = NSEvent.modifierFlags.contains(.shift)
+                select(extend ? (selection?.union(picked) ?? picked) : picked)
+            }
+    }
+
+    /// 视图坐标（原点左上）里的两点 → 归一化矩形（原点左下）。
+    private func normalizedRect(from a: CGPoint, to b: CGPoint, in size: CGSize) -> CGRect {
+        let rect = CGRect(
+            x: min(a.x, b.x) / size.width,
+            y: 1 - max(a.y, b.y) / size.height,
+            width: abs(a.x - b.x) / size.width,
+            height: abs(a.y - b.y) / size.height
+        )
+        return rect.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    /// 点中的那一行（重叠时取最小的），四周留边，免得切掉笔画。
+    private func lineBox(at point: CGPoint, in size: CGSize) -> CGRect? {
+        let target = CGPoint(x: point.x / size.width, y: 1 - point.y / size.height)
+        let hit = lines
+            .map(\.box)
+            .filter { $0.insetBy(dx: -$0.height * 0.2, dy: -$0.height * 0.2).contains(target) }
+            .min { $0.width * $0.height < $1.width * $1.height }
+        return hit.map {
+            $0.insetBy(dx: -$0.height * 0.3, dy: -$0.height * 0.3)
+                .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+    }
+
+    private func viewRect(_ box: CGRect, in size: CGSize) -> CGRect {
+        CGRect(
+            x: box.minX * size.width,
+            y: (1 - box.maxY) * size.height,
+            width: box.width * size.width,
+            height: box.height * size.height
+        )
+    }
+
+    /// 切下来那块图里的框 → 整张图里的框。
+    private func fullBox(_ box: CGRect) -> CGRect {
+        guard let selection else { return box }
+        return CGRect(
+            x: selection.minX + box.minX * selection.width,
+            y: selection.minY + box.minY * selection.height,
+            width: box.width * selection.width,
+            height: box.height * selection.height
+        )
+    }
+
     private var characterEditor: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField(isRecognizing ? "认字中…" : "照图把字打进来", text: $text)
+            TextField(isRecognizing ? "认字中…" : needsSelection ? "先在图里选出要找的字" : "照图把字打进来", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .font(.title2)
-                .disabled(image == nil)
+                .disabled(image == nil || needsSelection)
                 .onChange(of: text) { _, _ in updateSplitBoxes() }
                 .onSubmit { if canStart { startMatching() } }
 
@@ -220,6 +366,7 @@ struct ImageFontMatchView: View {
     private var boxHint: String {
         if image == nil { return "放入图片后会自动认字" }
         if isRecognizing { return "正在认字…" }
+        if needsSelection { return "这张图字多，先在上面选出要找的那几个字" }
         if usesRecognizedBoxes {
             return "自动认出 \(recognized.count) 个字。认错了就直接改字，字数别变"
         }
@@ -329,8 +476,8 @@ struct ImageFontMatchView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 32)
-            if let image {
-                Image(nsImage: image)
+            if let workingImage {
+                Image(decorative: workingImage, scale: 1)
                     .resizable()
                     .scaledToFit()
                     .frame(height: 64, alignment: .leading)
@@ -389,6 +536,16 @@ struct ImageFontMatchView: View {
         }
         image = newImage
         cgImage = cg
+        lines = []
+        selection = nil
+        recognizeWorking(cg, isWholeImage: true)
+    }
+
+    /// 认 workingImage 里的字。整张图认出不止一行时先不填字，等人选范围。
+    private func recognizeWorking(_ cg: CGImage, isWholeImage: Bool) {
+        let id = UUID()
+        recognitionID = id
+        workingImage = cg
         recognized = []
         splitBoxes = []
         text = ""
@@ -396,25 +553,56 @@ struct ImageFontMatchView: View {
         message = nil
         isRecognizing = true
         Task.detached(priority: .userInitiated) {
-            let found = (try? FontImageMatcher.recognize(cg)) ?? []
+            let found = (try? FontImageMatcher.recognizeLines(cg)) ?? []
             await MainActor.run {
+                guard recognitionID == id else { return }
                 isRecognizing = false
-                recognized = found
-                text = String(found.map(\.character))
+                if isWholeImage { lines = found }
+                recognized = found.flatMap(\.characters)
+                text = needsSelection ? "" : String(recognized.map(\.character))
             }
         }
     }
 
+    /// 选中范围：切下这块，只在里面重新认字（小字切出来认得更准）。
+    private func select(_ rect: CGRect) {
+        guard let cgImage, rect.width > 0, rect.height > 0 else { return }
+        let width = Double(cgImage.width)
+        let height = Double(cgImage.height)
+        let pixelRect = CGRect(
+            x: rect.minX * width,
+            y: (1 - rect.maxY) * height,
+            width: rect.width * width,
+            height: rect.height * height
+        ).integral
+        guard pixelRect.width >= 8, pixelRect.height >= 8, let piece = cgImage.cropping(to: pixelRect) else { return }
+        selection = rect
+        recognizeWorking(piece, isWholeImage: false)
+    }
+
+    private func useWholeImage() {
+        guard let cgImage else { return }
+        recognitionID = UUID()
+        isRecognizing = false
+        selection = nil
+        workingImage = cgImage
+        recognized = lines.flatMap(\.characters)
+        splitBoxes = []
+        results = []
+        message = nil
+        text = needsSelection ? "" : String(recognized.map(\.character))
+    }
+
     private func updateSplitBoxes() {
         let count = typedCharacters.count
-        guard let cgImage, count != recognized.count else { return }
+        guard let workingImage, count != recognized.count else { return }
         if splitBoxes.count != count {
-            splitBoxes = FontImageMatcher.evenBoxes(in: cgImage, count: count)
+            splitBoxes = FontImageMatcher.evenBoxes(in: workingImage, count: count)
         }
     }
 
     private func crop(_ box: CGRect) -> NSImage? {
-        guard let cgImage else { return nil }
+        guard let cgImage = workingImage else { return nil }
         let width = Double(cgImage.width)
         let height = Double(cgImage.height)
         let rect = CGRect(
@@ -431,7 +619,7 @@ struct ImageFontMatchView: View {
     // MARK: - 比对
 
     private func startMatching() {
-        guard let cgImage, canStart else { return }
+        guard let cgImage = workingImage, canStart else { return }
         let characters = pairs
         let fonts = store.fonts.filter { $0.isSupportedFontFile }
         results = []

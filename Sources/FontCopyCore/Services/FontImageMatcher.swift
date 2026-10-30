@@ -14,6 +14,12 @@ public struct RecognizedCharacter: Hashable, Sendable {
     }
 }
 
+/// 图里认出的一行字。海报这类图有好几行，让人点行选范围。
+public struct RecognizedLine: Sendable {
+    public let box: CGRect
+    public let characters: [RecognizedCharacter]
+}
+
 /// 从图里切出来、归一化好的一个字形，用来和库里字体比对。
 public struct FontImageTarget: Sendable {
     public let character: Character
@@ -34,24 +40,32 @@ public enum FontImageMatcher {
     static let renderSize: CGFloat = 128
 
     public static func recognize(_ image: CGImage) throws -> [RecognizedCharacter] {
+        try recognizeLines(image).flatMap(\.characters)
+    }
+
+    public static func recognizeLines(_ image: CGImage) throws -> [RecognizedLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["zh-Hans", "zh-Hant"]
         request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: image).perform([request])
 
-        var characters: [RecognizedCharacter] = []
+        var lines: [RecognizedLine] = []
         for observation in request.results ?? [] {
             guard let candidate = observation.topCandidates(1).first else { continue }
             let text = candidate.string
+            var characters: [RecognizedCharacter] = []
             for index in text.indices {
                 let character = text[index]
                 guard !character.isWhitespace, !character.isPunctuation, !character.isSymbol else { continue }
                 guard let box = try? candidate.boundingBox(for: index..<text.index(after: index)) else { continue }
                 characters.append(RecognizedCharacter(character: character, box: box.boundingBox))
             }
+            if !characters.isEmpty {
+                lines.append(RecognizedLine(box: observation.boundingBox, characters: characters))
+            }
         }
-        return characters
+        return lines
     }
 
     /// 认不出字时的退路（手写、太小）：按墨迹范围沿长边切成 count 份，
